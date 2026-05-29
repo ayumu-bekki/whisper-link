@@ -60,10 +60,12 @@ impl AudioQueue {
         self.inner.pop_front()
     }
 
+    #[allow(dead_code)]
     pub fn peek(&self) -> Option<&AudioEntry> {
         self.inner.front()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
