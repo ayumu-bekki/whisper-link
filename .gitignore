@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Rust
+app/**/target/
+app/**/*.rs.bk
+
+# Generated protobuf code
+app/proto/gen/
+
+# KiCad
+pcb/**/*-backups/
+pcb/**/*.000
+pcb/**/*.bak
+pcb/**/fp-info-cache
+pcb/**/_autosave-*
+pcb/**/*.kicad_prl
+

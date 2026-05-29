@@ -1,0 +1,7 @@
+[build]
+# Raspberry Pi 5 (aarch64) 向けデフォルトターゲット
+# クロスコンパイル時: cargo build --target aarch64-unknown-linux-gnu
+# target = "aarch64-unknown-linux-gnu"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"

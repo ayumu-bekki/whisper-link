@@ -1,0 +1,16 @@
+syntax = "proto3";
+package transceiver;
+
+service TransceiverService {
+  rpc SendAudio(AudioChunk) returns (SendAudioResponse);
+}
+
+message AudioChunk {
+  bytes  ogg_opus_data = 1;
+  string request_id    = 2;
+}
+
+message SendAudioResponse {
+  string request_id = 1;
+  string message    = 2;
+}

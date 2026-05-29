@@ -1,0 +1,20 @@
+[server]
+listen_addr = "0.0.0.0:50051"
+
+[gpio]
+ptt_pin = 17
+
+[audio]
+output_device       = "default"
+input_device        = "default"
+input_threshold_rms = 500
+input_silence_ms    = 300
+
+[timing]
+ptt_on_delay_ms  = 500
+ptt_off_delay_ms = 200
+cooldown_ms      = 1000
+
+[queue]
+max_audio_duration_secs = 30
+max_queue_size          = 10
