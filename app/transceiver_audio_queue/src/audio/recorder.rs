@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 const SAMPLE_RATE: u32 = 48000;
-const CHANNELS: u32 = 1;
+const CHANNELS: u32 = 2;
 // 20ms フレーム @ 48kHz
 const FRAME_SIZE: usize = 960;
 
@@ -19,6 +19,8 @@ const FRAME_SIZE: usize = 960;
 pub struct AudioRecorder {
     pub tx: broadcast::Sender<Vec<u8>>,
     is_recording: Arc<AtomicBool>,
+    is_transmitting: Arc<AtomicBool>,
+    stop_recording: Arc<AtomicBool>,
 }
 
 impl AudioRecorder {
@@ -32,6 +34,10 @@ impl AudioRecorder {
         let tx_clone = tx.clone();
         let is_recording = Arc::new(AtomicBool::new(false));
         let is_recording_clone = Arc::clone(&is_recording);
+        let is_transmitting = Arc::new(AtomicBool::new(false));
+        let is_transmitting_clone = Arc::clone(&is_transmitting);
+        let stop_recording = Arc::new(AtomicBool::new(false));
+        let stop_recording_clone = Arc::clone(&stop_recording);
         let device = device.to_string();
 
         std::thread::spawn(move || {
@@ -42,18 +48,31 @@ impl AudioRecorder {
                 max_recording_duration,
                 tx_clone,
                 &is_recording_clone,
+                &is_transmitting_clone,
+                &stop_recording_clone,
             ) {
                 error!("audio recorder error: {e}");
             }
         });
 
-        Ok(Self { tx, is_recording })
+        Ok(Self { tx, is_recording, is_transmitting, stop_recording })
     }
 
     /// 現在マイク入力を録音中かどうか。
-    /// コントローラはこのフラグを参照してキューの消費を制御する。
     pub fn is_recording(&self) -> bool {
         self.is_recording.load(Ordering::Relaxed)
+    }
+
+    /// PTT送信中フラグをセット。送信中は新規録音を開始しない。
+    pub fn set_transmitting(&self, transmitting: bool) {
+        self.is_transmitting.store(transmitting, Ordering::Relaxed);
+    }
+
+    /// 進行中の録音を強制終了する。is_recording を即座に false にし、
+    /// レコーダースレッドが次フレームで内部状態をリセットする。
+    pub fn force_stop_recording(&self) {
+        self.stop_recording.store(true, Ordering::Relaxed);
+        self.is_recording.store(false, Ordering::Relaxed);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
@@ -68,6 +87,8 @@ fn record_loop(
     max_recording_duration: Duration,
     tx: broadcast::Sender<Vec<u8>>,
     is_recording: &AtomicBool,
+    is_transmitting: &AtomicBool,
+    stop_recording: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pcm = PCM::new(device, Direction::Capture, false)?;
 
@@ -85,7 +106,8 @@ fn record_loop(
     info!("audio recorder started, monitoring input level");
 
     let io = pcm.io_i16()?;
-    let mut pcm_buf = vec![0i16; FRAME_SIZE];
+    // ステレオインターリーブ (L, R, L, R, ...) で受け取る
+    let mut pcm_buf = vec![0i16; FRAME_SIZE * CHANNELS as usize];
 
     // 録音バッファ (PCMサンプル列)
     let mut record_buf: Vec<i16> = Vec::new();
@@ -110,14 +132,33 @@ fn record_loop(
             continue;
         }
 
-        let samples = &pcm_buf[..frames];
-        let rms = compute_rms(samples);
+        // 強制終了フラグが立っていたら録音状態をリセット
+        if stop_recording.load(Ordering::Relaxed) {
+            stop_recording.store(false, Ordering::Relaxed);
+            if recording {
+                recording = false;
+                is_recording.store(false, Ordering::Relaxed);
+                record_buf.clear();
+                last_above_threshold = None;
+                record_started_at = None;
+            }
+            continue;
+        }
 
-        if rms >= threshold_rms {
+        // ステレオ→モノラル: L/R を平均してダウンミックス
+        let stereo = &pcm_buf[..frames * CHANNELS as usize];
+        let samples: Vec<i16> = stereo
+            .chunks(CHANNELS as usize)
+            .map(|ch| ((ch[0] as i32 + ch[1] as i32) / 2) as i16)
+            .collect();
+        let samples = samples.as_slice();
+        let rms = compute_rms(samples);
+        //debug!(rms, threshold = threshold_rms, "input level");
+
+        if rms >= threshold_rms && !is_transmitting.load(Ordering::Relaxed) {
             last_above_threshold = Some(Instant::now());
 
             if !recording {
-                // 録音開始
                 recording = true;
                 is_recording.store(true, Ordering::Relaxed);
                 record_buf.clear();
@@ -198,7 +239,7 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
     head.extend_from_slice(&SAMPLE_RATE.to_le_bytes()); // input sample rate
     head.extend_from_slice(&0i16.to_le_bytes()); // output gain
     head.push(0); // channel mapping family
-    pw.write_packet(head.into(), serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
+    pw.write_packet(head, serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
 
     // OpusTags
     let mut tags = Vec::new();
@@ -207,7 +248,7 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
     tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
     tags.extend_from_slice(vendor);
     tags.extend_from_slice(&0u32.to_le_bytes());
-    pw.write_packet(tags.into(), serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
+    pw.write_packet(tags, serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
 
     // 音声パケット: FRAME_SIZE サンプルずつエンコード
     let mut opus_buf = vec![0u8; 4096];
@@ -222,7 +263,7 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
                 // 残りのパケットを EOS ページとして書き出す
                 if let Some(pkt) = pending.take() {
                     pw.write_packet(
-                        pkt.into(),
+                        pkt,
                         serial,
                         ogg::writing::PacketWriteEndInfo::EndStream,
                         granule_pos,
@@ -246,7 +287,7 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
         // 前のパケットを NormalPacket として書き出し、今のを pending に
         if let Some(prev) = pending.replace(opus_buf[..encoded_len].to_vec()) {
             pw.write_packet(
-                prev.into(),
+                prev,
                 serial,
                 ogg::writing::PacketWriteEndInfo::NormalPacket,
                 0,

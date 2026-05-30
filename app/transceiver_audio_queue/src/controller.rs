@@ -77,6 +77,10 @@ impl Controller {
     }
 
     async fn handle_idle(&self) -> State {
+        // キューにアイテムがある間、録音終了を最大この時間待つ
+        const RECORDING_WAIT_TIMEOUT_MS: u64 = 3000;
+        let mut recording_wait_ms: u64 = 0;
+
         loop {
             let has_queue = {
                 let q = self.queue.lock().unwrap();
@@ -85,19 +89,30 @@ impl Controller {
 
             if has_queue {
                 if self.recorder.is_recording() {
-                    debug!("queue has items but mic is recording, waiting...");
-                    sleep(Duration::from_millis(100)).await;
-                    continue;
+                    if recording_wait_ms >= RECORDING_WAIT_TIMEOUT_MS {
+                        warn!(
+                            "mic recording did not stop after {}ms, forcing stop",
+                            recording_wait_ms
+                        );
+                        self.recorder.force_stop_recording();
+                    } else {
+                        debug!("queue has items but mic is recording, waiting...");
+                        recording_wait_ms += 100;
+                        sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
                 }
                 info!("state: IDLE -> PTT_ON");
                 return State::PttOn;
             }
 
+            recording_wait_ms = 0;
             sleep(Duration::from_millis(100)).await;
         }
     }
 
     async fn handle_ptt_on(&self, ptt_pin: &mut OutputPin) -> State {
+        self.recorder.set_transmitting(true);
         ptt_pin.set_high();
         info!("GPIO PTT=HIGH");
         sleep(Duration::from_millis(self.config.timing.ptt_on_delay_ms)).await;
@@ -144,6 +159,7 @@ impl Controller {
     async fn handle_ptt_off(&self, ptt_pin: &mut OutputPin) -> State {
         sleep(Duration::from_millis(self.config.timing.ptt_off_delay_ms)).await;
         ptt_pin.set_low();
+        self.recorder.set_transmitting(false);
         info!("GPIO PTT=LOW");
         info!("state: PTT_OFF -> COOLDOWN");
         State::Cooldown
@@ -173,6 +189,9 @@ impl Controller {
     }
 
     async fn handle_listening(&self) -> State {
+        const RECORDING_WAIT_TIMEOUT_MS: u64 = 3000;
+        let mut recording_wait_ms: u64 = 0;
+
         loop {
             if !self.recorder.is_recording() {
                 info!("mic recording finished");
@@ -188,6 +207,17 @@ impl Controller {
                     return State::Idle;
                 }
             }
+
+            recording_wait_ms += 100;
+            if recording_wait_ms >= RECORDING_WAIT_TIMEOUT_MS {
+                warn!(
+                    "mic recording did not stop after {}ms, forcing stop",
+                    recording_wait_ms
+                );
+                self.recorder.force_stop_recording();
+                recording_wait_ms = 0;
+            }
+
             sleep(Duration::from_millis(100)).await;
         }
     }

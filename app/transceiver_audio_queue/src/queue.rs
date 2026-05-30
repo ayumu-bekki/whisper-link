@@ -61,9 +61,6 @@ impl AudioQueue {
         self.inner.is_empty()
     }
 
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,8 +84,8 @@ fn parse_ogg_opus_duration(data: &[u8]) -> Result<Duration, String> {
     loop {
         match reader.read_packet() {
             Ok(Some(packet)) => {
-                if packet.absgp_page != 0 {
-                    last_granule = Some(packet.absgp_page);
+                if packet.absgp_page() != 0 {
+                    last_granule = Some(packet.absgp_page());
                 }
             }
             Ok(None) => break,

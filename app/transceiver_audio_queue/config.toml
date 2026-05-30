@@ -2,13 +2,13 @@
 listen_addr = "0.0.0.0:50051"
 
 [gpio]
-ptt_pin = 17
+ptt_pin = 26
 
 [audio]
-output_device       = "default"
-input_device        = "default"
-input_threshold_rms     = 500
-input_silence_ms        = 300
+output_device       = "plughw:2,0"
+input_device        = "hw:2,0"
+input_threshold_rms     = 1000
+input_silence_ms        = 1000
 input_max_recording_secs = 30
 
 [timing]

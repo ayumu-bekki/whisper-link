@@ -37,12 +37,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.queue.max_audio_duration_secs,
     )));
 
-    let recorder = Arc::new(AudioRecorder::start(
-        &config.audio.input_device,
-        config.audio.input_threshold_rms,
-        Duration::from_millis(config.audio.input_silence_ms),
-        Duration::from_secs(config.audio.input_max_recording_secs),
-    )?);
+    let recorder = Arc::new(
+        AudioRecorder::start(
+            &config.audio.input_device,
+            config.audio.input_threshold_rms,
+            Duration::from_millis(config.audio.input_silence_ms),
+            Duration::from_secs(config.audio.input_max_recording_secs),
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e })?,
+    );
     info!("audio recorder started on device: {}", config.audio.input_device);
 
     let handler = TransceiverHandler::new(Arc::clone(&queue), Arc::clone(&recorder));
