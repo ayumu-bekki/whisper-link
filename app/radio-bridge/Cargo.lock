@@ -778,6 +778,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "radio-bridge"
+version = "0.1.0"
+dependencies = [
+ "alsa",
+ "bytes",
+ "ogg",
+ "opus",
+ "prost",
+ "rppal",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1295,27 +1316,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "transceiver_audio_queue"
-version = "0.1.0"
-dependencies = [
- "alsa",
- "bytes",
- "ogg",
- "opus",
- "prost",
- "rppal",
- "serde",
- "thiserror",
- "tokio",
- "tokio-stream",
- "toml",
- "tonic",
- "tonic-build",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

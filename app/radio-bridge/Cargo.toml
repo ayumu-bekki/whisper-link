@@ -1,10 +1,10 @@
 [package]
-name = "transceiver_audio_queue"
+name = "radio-bridge"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "transceiver_audio_queue"
+name = "radio-bridge"
 path = "src/main.rs"
 
 [dependencies]

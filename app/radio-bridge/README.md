@@ -1,4 +1,4 @@
-# transceiver_audio_queue
+# radio-bridge
 
 無線トランシーバーと gRPC クライアント間で音声を中継するデーモン。
 受信した音声をキューに積んで順次 PTT 送信し、マイク入力をリアルタイムで gRPC クライアントにストリーミングする。
