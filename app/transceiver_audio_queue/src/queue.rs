@@ -6,7 +6,6 @@ const OPUS_SAMPLE_RATE: u32 = 48000;
 
 #[derive(Debug, Clone)]
 pub struct AudioEntry {
-    pub request_id: String,
     pub ogg_opus_data: Vec<u8>,
     pub duration: Duration,
 }
@@ -29,13 +28,12 @@ impl AudioQueue {
     /// キューへの追加を試みる。
     /// Ok(position) = キュー内の位置 (1始まり)
     /// Err(QueueError) = 拒否理由
-    pub fn push(&mut self, request_id: String, ogg_opus_data: Vec<u8>) -> Result<usize, QueueError> {
+    pub fn push(&mut self, ogg_opus_data: Vec<u8>) -> Result<usize, QueueError> {
         let duration = parse_ogg_opus_duration(&ogg_opus_data)
-            .map_err(|e| QueueError::ParseError(e))?;
+            .map_err(QueueError::ParseError)?;
 
         if duration > self.max_duration {
             warn!(
-                request_id = %request_id,
                 duration_secs = duration.as_secs_f32(),
                 max_secs = self.max_duration.as_secs(),
                 "audio too long, rejecting"
@@ -48,7 +46,6 @@ impl AudioQueue {
         }
 
         self.inner.push_back(AudioEntry {
-            request_id,
             ogg_opus_data,
             duration,
         });
@@ -60,18 +57,12 @@ impl AudioQueue {
         self.inner.pop_front()
     }
 
-    #[allow(dead_code)]
-    pub fn peek(&self) -> Option<&AudioEntry> {
-        self.inner.front()
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -85,8 +76,7 @@ pub enum QueueError {
     ParseError(String),
 }
 
-/// Ogg Opusストリームの再生時間をパースする。
-/// Opusはページヘッダのgranule_positionから計算できる。
+/// Ogg Opusストリームの再生時間をgranule_positionからパースする。
 /// granule_position は 48kHz サンプル数で表現される。
 fn parse_ogg_opus_duration(data: &[u8]) -> Result<Duration, String> {
     let mut cursor = std::io::Cursor::new(data);
@@ -97,8 +87,8 @@ fn parse_ogg_opus_duration(data: &[u8]) -> Result<Duration, String> {
     loop {
         match reader.read_packet() {
             Ok(Some(packet)) => {
-                if packet.absgp_page() != 0 {
-                    last_granule = Some(packet.absgp_page());
+                if packet.absgp_page != 0 {
+                    last_granule = Some(packet.absgp_page);
                 }
             }
             Ok(None) => break,

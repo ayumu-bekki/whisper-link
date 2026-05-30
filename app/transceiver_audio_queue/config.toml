@@ -7,8 +7,9 @@ ptt_pin = 17
 [audio]
 output_device       = "default"
 input_device        = "default"
-input_threshold_rms = 500
-input_silence_ms    = 300
+input_threshold_rms     = 500
+input_silence_ms        = 300
+input_max_recording_secs = 30
 
 [timing]
 ptt_on_delay_ms  = 500

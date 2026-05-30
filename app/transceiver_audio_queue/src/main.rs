@@ -4,12 +4,14 @@ mod controller;
 mod grpc;
 mod queue;
 
+use crate::audio::recorder::AudioRecorder;
 use crate::config::Config;
 use crate::controller::Controller;
 use crate::grpc::handler::{TransceiverHandler, TransceiverServiceServer};
 use crate::queue::AudioQueue;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tonic::transport::Server;
 use tracing::info;
 
@@ -35,10 +37,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.queue.max_audio_duration_secs,
     )));
 
-    let handler = TransceiverHandler::new(Arc::clone(&queue));
+    let recorder = Arc::new(AudioRecorder::start(
+        &config.audio.input_device,
+        config.audio.input_threshold_rms,
+        Duration::from_millis(config.audio.input_silence_ms),
+        Duration::from_secs(config.audio.input_max_recording_secs),
+    )?);
+    info!("audio recorder started on device: {}", config.audio.input_device);
+
+    let handler = TransceiverHandler::new(Arc::clone(&queue), Arc::clone(&recorder));
     let addr = config.server.listen_addr.parse()?;
 
-    let controller = Controller::new(Arc::clone(&queue), config);
+    let controller = Controller::new(Arc::clone(&queue), Arc::clone(&recorder), config);
     let controller_task = tokio::spawn(async move {
         if let Err(e) = controller.run().await {
             tracing::error!("controller error: {e}");

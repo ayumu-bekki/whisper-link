@@ -1,12 +1,12 @@
-use crate::audio::monitor::AudioMonitor;
 use crate::audio::player::AudioPlayer;
+use crate::audio::recorder::AudioRecorder;
 use crate::config::Config;
 use crate::queue::AudioQueue;
 use rppal::gpio::{Gpio, OutputPin};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum State {
@@ -33,24 +33,19 @@ impl std::fmt::Display for State {
 
 pub struct Controller {
     queue: Arc<Mutex<AudioQueue>>,
+    recorder: Arc<AudioRecorder>,
     config: Config,
 }
 
 impl Controller {
-    pub fn new(queue: Arc<Mutex<AudioQueue>>, config: Config) -> Self {
-        Self { queue, config }
+    pub fn new(queue: Arc<Mutex<AudioQueue>>, recorder: Arc<AudioRecorder>, config: Config) -> Self {
+        Self { queue, recorder, config }
     }
 
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let gpio = Gpio::new()?;
         let mut ptt_pin = gpio.get(self.config.gpio.ptt_pin)?.into_output();
         ptt_pin.set_low();
-
-        let monitor = AudioMonitor::start(
-            &self.config.audio.input_device,
-            self.config.audio.input_threshold_rms,
-            Duration::from_millis(self.config.audio.input_silence_ms),
-        )?;
 
         let player = AudioPlayer::new(&self.config.audio.output_device);
 
@@ -60,7 +55,7 @@ impl Controller {
         loop {
             match state {
                 State::Idle => {
-                    state = self.handle_idle(&monitor).await;
+                    state = self.handle_idle().await;
                 }
                 State::PttOn => {
                     state = self.handle_ptt_on(&mut ptt_pin).await;
@@ -72,16 +67,16 @@ impl Controller {
                     state = self.handle_ptt_off(&mut ptt_pin).await;
                 }
                 State::Cooldown => {
-                    state = self.handle_cooldown(&monitor).await;
+                    state = self.handle_cooldown().await;
                 }
                 State::Listening => {
-                    state = self.handle_listening(&monitor).await;
+                    state = self.handle_listening().await;
                 }
             }
         }
     }
 
-    async fn handle_idle(&self, monitor: &AudioMonitor) -> State {
+    async fn handle_idle(&self) -> State {
         loop {
             let has_queue = {
                 let q = self.queue.lock().unwrap();
@@ -89,8 +84,8 @@ impl Controller {
             };
 
             if has_queue {
-                if monitor.is_active() {
-                    debug!("queue has items but input is active, waiting...");
+                if self.recorder.is_recording() {
+                    debug!("queue has items but mic is recording, waiting...");
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -123,11 +118,9 @@ impl Controller {
             }
             Some(entry) => {
                 info!(
-                    request_id = %entry.request_id,
                     duration_secs = entry.duration.as_secs_f32(),
                     "playing audio"
                 );
-                // ブロッキング再生はspawn_blockingで実行してtokioランタイムをブロックしない
                 let data = entry.ogg_opus_data.clone();
                 let player_device = player.device.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -156,12 +149,12 @@ impl Controller {
         State::Cooldown
     }
 
-    async fn handle_cooldown(&self, monitor: &AudioMonitor) -> State {
+    async fn handle_cooldown(&self) -> State {
         sleep(Duration::from_millis(self.config.timing.cooldown_ms)).await;
         info!("cooldown complete");
 
-        if monitor.is_active() {
-            info!("state: COOLDOWN -> LISTENING (input detected)");
+        if self.recorder.is_recording() {
+            info!("state: COOLDOWN -> LISTENING (mic recording detected)");
             return State::Listening;
         }
 
@@ -179,10 +172,10 @@ impl Controller {
         }
     }
 
-    async fn handle_listening(&self, monitor: &AudioMonitor) -> State {
+    async fn handle_listening(&self) -> State {
         loop {
-            if !monitor.is_active() {
-                info!("input silence detected");
+            if !self.recorder.is_recording() {
+                info!("mic recording finished");
                 let has_queue = {
                     let q = self.queue.lock().unwrap();
                     !q.is_empty()

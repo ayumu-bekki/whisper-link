@@ -26,6 +26,7 @@ pub struct AudioConfig {
     pub input_device: String,
     pub input_threshold_rms: u16,
     pub input_silence_ms: u64,
+    pub input_max_recording_secs: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
