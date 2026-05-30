@@ -6,8 +6,8 @@
 
 | ディレクトリ | 内容 |
 |---|---|
-| `app/transceiver_audio_queue/` | Rustサーバー (Raspberry Pi 5) |
-| `app/transceiver_test_client/` | Goテストクライアント (macOS) |
+| `app/radio-bridge/` | Rustサーバー (Raspberry Pi 5) |
+| `app/radio-bridge-test-client/` | Goテストクライアント (macOS) |
 | `app/proto/` | Protocol Buffers定義 |
 | `pcb/` | KiCad PCB設計ファイル |
 
@@ -17,13 +17,13 @@
 
 各コンポーネントの詳細なセットアップ手順はそれぞれのディレクトリのREADMEを参照。
 
-- テストクライアント: [`app/transceiver_test_client/README.md`](app/transceiver_test_client/README.md)
+- テストクライアント: [`app/radio-bridge-test-client/README.md`](app/radio-bridge-test-client/README.md)
 
 ### Raspberry Pi 5 (サーバー)
 
 ```bash
 sudo apt install libasound2-dev pkg-config
-cd app/transceiver_audio_queue
+cd app/radio-bridge
 cargo build --release
-./target/release/transceiver_audio_queue config.toml
+./target/release/radio-bridge config.toml
 ```

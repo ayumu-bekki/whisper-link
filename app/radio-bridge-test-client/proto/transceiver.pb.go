@@ -74,7 +74,7 @@ const file_transceiver_proto_rawDesc = "" +
 	"AudioChunk\x12\"\n" +
 	"\rogg_opus_data\x18\x01 \x01(\fR\voggOpusData2U\n" +
 	"\x12TransceiverService\x12?\n" +
-	"\aConnect\x12\x17.transceiver.AudioChunk\x1a\x17.transceiver.AudioChunk(\x010\x01B\x1fZ\x1dtransceiver_test_client/protob\x06proto3"
+	"\aConnect\x12\x17.transceiver.AudioChunk\x1a\x17.transceiver.AudioChunk(\x010\x01B Z\x1eradio-bridge-test-client/protob\x06proto3"
 
 var (
 	file_transceiver_proto_rawDescOnce sync.Once

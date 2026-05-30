@@ -1,4 +1,4 @@
-# transceiver_test_client
+# radio-bridge-test-client
 
 `transceiver_audio_queue` サーバーの動作確認用CLIアプリ (macOS向け)。
 
@@ -23,19 +23,19 @@ sudo port install protobuf pkgconfig portaudio libopus
 ## ビルド
 
 ```bash
-cd app/transceiver_test_client
-PKG_CONFIG_PATH="/opt/local/lib/pkgconfig" go build -o transceiver_test_client .
+cd app/radio-bridge-test-client
+PKG_CONFIG_PATH="/opt/local/lib/pkgconfig" go build -o radio-bridge-test-client .
 ```
 
 ## 使い方
 
 ```bash
-./transceiver_test_client <host> <port>
+./radio-bridge-test-client <host> <port>
 ```
 
 **例:**
 ```bash
-./transceiver_test_client 192.168.1.10 50051
+./radio-bridge-test-client 192.168.1.10 50051
 ```
 
 起動するとサーバーに接続し、以下の操作が可能になる。
@@ -53,6 +53,6 @@ PKG_CONFIG_PATH="/opt/local/lib/pkgconfig" go build -o transceiver_test_client .
 `app/proto/transceiver.proto` を変更したあとは以下で再生成する。
 
 ```bash
-cd app/transceiver_test_client
+cd app/radio-bridge-test-client
 go generate
 ```
