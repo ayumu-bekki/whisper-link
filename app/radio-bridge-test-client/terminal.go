@@ -12,10 +12,10 @@ func makeRaw(fd int) (*unix.Termios, error) {
 	}
 	old := *termios
 
-	// rawモード設定
+	// 入力のみrawモード: キー入力をバッファリングなし・エコーなしで取得する。
+	// OPOST はオフにしない (出力の \n -> \r\n 変換はターミナルに任せる)。
 	termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
 		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
-	termios.Oflag &^= unix.OPOST
 	termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
 	termios.Cflag &^= unix.CSIZE | unix.PARENB
 	termios.Cflag |= unix.CS8

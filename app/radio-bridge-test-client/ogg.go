@@ -6,6 +6,8 @@ import (
 	"hash/crc32"
 )
 
+const framesPerPage = 10 // Oggページあたりのフレーム数 (200ms)
+
 // Oggページライター (シンプルな実装)
 type oggWriter struct {
 	buf        bytes.Buffer

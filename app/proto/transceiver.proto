@@ -1,7 +1,7 @@
 syntax = "proto3";
 package transceiver;
 
-option go_package = "transceiver_test_client/proto";
+option go_package = "radio-bridge-test-client/proto";
 
 service TransceiverService {
   // 双方向ストリーミング: クライアントから音声を送信し、サーバーからも音声を受信する

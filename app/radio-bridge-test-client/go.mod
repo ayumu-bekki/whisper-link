@@ -1,4 +1,4 @@
-module transceiver_test_client
+module radio-bridge-test-client
 
 go 1.26.1
 
