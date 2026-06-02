@@ -14,12 +14,8 @@ WORKDIR /build
 COPY proto/ proto/
 COPY wl-game-server/ wl-game-server/
 
-RUN protoc -I proto \
-    --go_out=paths=source_relative:wl-game-server/proto \
-    --go-grpc_out=paths=source_relative:wl-game-server/proto \
-    transceiver.proto
-
 WORKDIR /build/wl-game-server/
+RUN go generate ./...
 RUN CGO_ENABLED=1 go build -o wl-game-server .
 
 FROM debian:bookworm-slim
