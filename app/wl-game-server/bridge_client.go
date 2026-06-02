@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	pb "wl-game-server/proto"
+	pb "wl-game-server/gen"
 )
 
 type BridgeClient struct {

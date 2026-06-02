@@ -18,6 +18,7 @@ app/wl-game-server/config.toml
 
 # Generated protobuf code
 app/proto/gen/
+app/wl-game-server/gen/
 
 # KiCad
 pcb/**/*-backups/
