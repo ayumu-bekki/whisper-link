@@ -38,7 +38,7 @@ func main() {
 	}
 	defer processor.Close()
 
-	ttsClient, err := NewTTSClient(ctx, cfg.Gemini.APIKey)
+	ttsClient, err := NewTTSClient(ctx, cfg.Gemini.APIKey, cfg.Gemini.TTSModel)
 	if err != nil {
 		log.Fatalf("NewTTSClient: %v", err)
 	}

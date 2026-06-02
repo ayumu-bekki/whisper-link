@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"time"
 
 	"github.com/gordonklaus/portaudio"
-	"github.com/hraban/opus"
+	hrabanopus "github.com/hraban/opus"
+	"github.com/kazzmir/opus-go/ogg"
 )
 
 const (
@@ -34,7 +34,7 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 	}
 	defer stream.Stop()
 
-	enc, err := opus.NewEncoder(sampleRate, channels, opus.AppVoIP)
+	enc, err := hrabanopus.NewEncoder(sampleRate, channels, hrabanopus.AppVoIP)
 	if err != nil {
 		return nil, fmt.Errorf("opus encoder: %w", err)
 	}
@@ -97,17 +97,34 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 }
 
 func encodeToOggOpus(frames [][]byte) []byte {
-	w := newOggWriter()
-	w.writePage(buildOpusHead(), 0, true, false)
-	w.writePage(buildOpusTags(), 0, false, false)
+	const preSkip = 312 // Opus standard pre-skip @ 48kHz
 
-	granule := uint64(0)
-	for _, frame := range frames {
-		granule += uint64(frameSize)
-		w.writeAudioPacket(frame, granule)
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, 0x57485052) // "WHPR"
+
+	head := ogg.OpusHead{
+		Version:              1,
+		Channels:             channels,
+		PreSkip:              preSkip,
+		InputSampleRate:      sampleRate,
+		ChannelMappingFamily: 0,
 	}
-	w.flush()
-	return w.bytes()
+	headPkt, _ := ogg.BuildOpusHeadPacket(head)
+	pw.WritePacket(headPkt, 0, true, false)
+
+	tags := ogg.OpusTags{Vendor: "radio-bridge-emulator"}
+	tagsPkt, _ := ogg.BuildOpusTagsPacket(tags)
+	pw.WritePacket(tagsPkt, 0, false, false)
+
+	var totalSamples uint64
+	for i, frame := range frames {
+		totalSamples += uint64(frameSize)
+		granule := uint64(preSkip) + totalSamples
+		isLast := i == len(frames)-1
+		pw.WritePacket(frame, granule, false, isLast)
+	}
+	pw.Flush()
+	return buf.Bytes()
 }
 
 // playOggOpus はOgg Opusデータをデコードしてデフォルト出力デバイスで再生する。
@@ -116,6 +133,7 @@ func playOggOpus(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
+	log.Printf("[play] decoded %d samples (%.1f sec)", len(pcmData), float64(len(pcmData))/float64(sampleRate))
 	if len(pcmData) == 0 {
 		return nil
 	}
@@ -142,7 +160,7 @@ func playOggOpus(data []byte) error {
 }
 
 func decodeOggOpus(data []byte) ([]int16, error) {
-	s, err := opus.NewStream(bytes.NewReader(data))
+	s, err := hrabanopus.NewStream(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("opus.NewStream: %w", err)
 	}
@@ -155,11 +173,8 @@ func decodeOggOpus(data []byte) ([]int16, error) {
 		if n > 0 {
 			pcm = append(pcm, buf[:n]...)
 		}
-		if err == io.EOF {
-			break
-		}
 		if err != nil {
-			return nil, err
+			break
 		}
 	}
 	return pcm, nil

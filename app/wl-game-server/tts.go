@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 
-	"github.com/hraban/opus"
+	hrabanopus "github.com/hraban/opus"
+	"github.com/kazzmir/opus-go/ogg"
+	"github.com/zeozeozeo/gomplerate"
 	"google.golang.org/genai"
 )
 
@@ -18,7 +21,7 @@ const (
 	frameSize           = 960 // 20ms @ 48kHz
 )
 
-const ttsModel = "gemini-2.5-flash-preview-tts"
+const defaultTTSModel = "gemini-3.1-flash-tts-preview"
 
 const ttsPromptTemplate = `# AUDIO PROFILE: 無線オペレーターA
 ## "無線でも聞き取りやすく発声する熟練オペレーター"
@@ -37,21 +40,25 @@ Accent: 日本国内で無線を運用していたので、コールサインを
 // TTSClient は Gemini TTS クライアントを保持する。
 type TTSClient struct {
 	client *genai.Client
+	model  string
 }
 
-func NewTTSClient(ctx context.Context, apiKey string) (*TTSClient, error) {
+func NewTTSClient(ctx context.Context, apiKey, model string) (*TTSClient, error) {
+	if model == "" {
+		model = defaultTTSModel
+	}
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
 	if err != nil {
 		return nil, fmt.Errorf("genai.NewClient: %w", err)
 	}
-	return &TTSClient{client: client}, nil
+	return &TTSClient{client: client, model: model}, nil
 }
 
 // GenerateOggOpus はsender/messageからTTS音声を生成してOgg Opusで返す。
 func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string) ([]byte, error) {
 	prompt := fmt.Sprintf(ttsPromptTemplate, sender, message)
 
-	resp, err := t.client.Models.GenerateContent(ctx, ttsModel,
+	resp, err := t.client.Models.GenerateContent(ctx, t.model,
 		[]*genai.Content{
 			genai.NewContentFromText(prompt, genai.RoleUser),
 		},
@@ -81,7 +88,6 @@ func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string)
 		return nil, fmt.Errorf("no inline audio data in TTS response")
 	}
 
-	// WAVヘッダが付いている場合はスキップしてPCMデータのみ取り出す
 	pcmData := stripWAVHeader(blob.Data)
 
 	pcm24k, err := parsePCM16(pcmData)
@@ -89,21 +95,42 @@ func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string)
 		return nil, fmt.Errorf("parsePCM16: %w", err)
 	}
 
-	// 24kHz → 48kHz アップサンプリング (線形補間)
-	pcm48k := upsample2x(pcm24k)
+	pcm48k, err := resamplePCM(pcm24k, ttsInputSampleRate, ttsOutputSampleRate)
+	if err != nil {
+		return nil, fmt.Errorf("resamplePCM: %w", err)
+	}
+	log.Printf("[tts] resampled %d → %d samples (%.1fs @ 48kHz)",
+		len(pcm24k), len(pcm48k), float64(len(pcm48k))/ttsOutputSampleRate)
 
 	return encodePCMToOggOpus(pcm48k)
 }
 
-// stripWAVHeader はデータ先頭に "RIFF" マジックがある場合WAVヘッダをスキップする。
+// stripWAVHeader はデータ先頭に "RIFF" マジックがある場合、"data" チャンクのペイロードを返す。
 func stripWAVHeader(data []byte) []byte {
-	if len(data) > 44 && bytes.HasPrefix(data, []byte("RIFF")) {
-		return data[44:]
+	if len(data) < 12 || !bytes.HasPrefix(data, []byte("RIFF")) {
+		return data
+	}
+	pos := 12
+	for pos+8 <= len(data) {
+		chunkID := string(data[pos : pos+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
+		pos += 8
+		if chunkID == "data" {
+			end := pos + chunkSize
+			if end > len(data) {
+				end = len(data)
+			}
+			return data[pos:end]
+		}
+		pos += chunkSize
+		if chunkSize%2 != 0 {
+			pos++
+		}
 	}
 	return data
 }
 
-// parsePCM16 はリトルエンディアン16bitPCMバイト列をint16スライスに変換する。
+// parsePCM16 はリトルエンディアン16bit PCMバイト列をint16スライスに変換する。
 func parsePCM16(data []byte) ([]int16, error) {
 	if len(data)%2 != 0 {
 		return nil, fmt.Errorf("odd PCM byte length: %d", len(data))
@@ -115,44 +142,74 @@ func parsePCM16(data []byte) ([]int16, error) {
 	return samples, nil
 }
 
-// upsample2x は24kHz PCMを48kHzに線形補間でアップサンプリングする。
-func upsample2x(src []int16) []int16 {
-	if len(src) == 0 {
-		return nil
+// resamplePCM はPCMをリサンプリングする。
+func resamplePCM(src []int16, srcRate, dstRate int) ([]int16, error) {
+	r, err := gomplerate.NewResampler(channels, srcRate, dstRate)
+	if err != nil {
+		return nil, fmt.Errorf("gomplerate.NewResampler: %w", err)
 	}
-	dst := make([]int16, len(src)*2)
-	for i, s := range src {
-		dst[i*2] = s
-		if i+1 < len(src) {
-			dst[i*2+1] = int16((int32(s) + int32(src[i+1])) / 2)
-		} else {
-			dst[i*2+1] = s
-		}
-	}
-	return dst
+	return r.ResampleInt16(src), nil
 }
 
-// encodePCMToOggOpus はPCMサンプル列をOpusエンコードしてOgg Opusコンテナに格納する。
+// encodePCMToOggOpus はPCMをOpusエンコードしてOgg Opusコンテナに格納する。
+// エンコーダ: hraban/opus (libopus cgo)
+// Oggコンテナ: kazzmir/opus-go/ogg
 func encodePCMToOggOpus(pcm []int16) ([]byte, error) {
-	enc, err := opus.NewEncoder(ttsOutputSampleRate, channels, opus.AppVoIP)
+	const preSkip = 312 // Opus standard pre-skip @ 48kHz
+
+	enc, err := hrabanopus.NewEncoder(ttsOutputSampleRate, channels, hrabanopus.AppAudio)
 	if err != nil {
 		return nil, fmt.Errorf("opus.NewEncoder: %w", err)
 	}
 
-	w := newOggWriter()
-	w.writePage(buildOpusHead(), 0, true, false)
-	w.writePage(buildOpusTags(), 0, false, false)
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, 0x57485052) // "WHPR"
 
-	granule := uint64(0)
-	opusBuf := make([]byte, 4096)
+	head := ogg.OpusHead{
+		Version:              1,
+		Channels:             channels,
+		PreSkip:              preSkip,
+		InputSampleRate:      ttsOutputSampleRate,
+		ChannelMappingFamily: 0,
+	}
+	headPkt, err := ogg.BuildOpusHeadPacket(head)
+	if err != nil {
+		return nil, fmt.Errorf("BuildOpusHeadPacket: %w", err)
+	}
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		return nil, fmt.Errorf("write OpusHead: %w", err)
+	}
+
+	tags := ogg.OpusTags{Vendor: "whisper-link"}
+	tagsPkt, err := ogg.BuildOpusTagsPacket(tags)
+	if err != nil {
+		return nil, fmt.Errorf("BuildOpusTagsPacket: %w", err)
+	}
+	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		return nil, fmt.Errorf("write OpusTags: %w", err)
+	}
+
+	packet := make([]byte, 4096)
+	var totalSamples uint64
+
 	for i := 0; i+frameSize <= len(pcm); i += frameSize {
-		n, err := enc.Encode(pcm[i:i+frameSize], opusBuf)
+		n, err := enc.Encode(pcm[i:i+frameSize], packet)
 		if err != nil {
 			return nil, fmt.Errorf("opus.Encode: %w", err)
 		}
-		granule += uint64(frameSize)
-		w.writeAudioPacket(opusBuf[:n], granule)
+
+		totalSamples += uint64(frameSize)
+		granule := uint64(preSkip) + totalSamples
+		isLast := i+frameSize+frameSize > len(pcm)
+
+		if err := pw.WritePacket(packet[:n], granule, false, isLast); err != nil {
+			return nil, fmt.Errorf("ogg.WritePacket: %w", err)
+		}
 	}
-	w.flush()
-	return w.bytes(), nil
+
+	if err := pw.Flush(); err != nil {
+		return nil, fmt.Errorf("ogg.Flush: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }

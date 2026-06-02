@@ -26,6 +26,7 @@ type GeminiConfig struct {
 	APIKey                string `toml:"api_key"`
 	TranscribeModel       string `toml:"transcribe_model"`
 	ReasoningModel        string `toml:"reasoning_model"`
+	TTSModel              string `toml:"tts_model"`
 	TranscribePromptFile  string `toml:"transcribe_prompt_file"`
 	TranscribeSchemaFile  string `toml:"transcribe_schema_file"`
 }

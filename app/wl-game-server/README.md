@@ -2,10 +2,16 @@
 
 ゲームサーバー。WebSocket でクライアントのセッション管理を行い、radio-bridge との音声通信を仲介する。
 
-## 起動
+## 依存ライブラリ (MacPorts)
 
 ```bash
-go build -o wl-game-server .
+sudo port install soxr pkgconfig
+```
+
+## ビルド・起動
+
+```bash
+PKG_CONFIG_PATH="/opt/local/lib/pkgconfig" go build -o wl-game-server .
 ./wl-game-server config.toml
 ```
 
@@ -22,6 +28,7 @@ max_reconnect_attempts = 0  # 0 = 無制限
 api_key = "..."
 transcribe_model = "gemini-3.1-flash-lite"
 reasoning_model  = "gemini-3.5-flash"
+tts_model        = "gemini-3.1-flash-tts-preview"
 transcribe_prompt_file = "transcribe_prompt.txt"
 transcribe_schema_file = "transcribe_schema.json"
 
