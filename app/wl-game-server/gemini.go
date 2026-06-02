@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"time"
 
-	"github.com/google/generative-ai-go/genai"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
 type TranscriptionItem struct {
@@ -21,14 +22,17 @@ type TranscriptionResult struct {
 }
 
 type GeminiProcessor struct {
-	cfg            GeminiConfig
-	client         *genai.Client
+	cfg              GeminiConfig
+	client           *genai.Client
 	transcribePrompt string
 	transcribeSchema *genai.Schema
 }
 
 func NewGeminiProcessor(ctx context.Context, cfg GeminiConfig) (*GeminiProcessor, error) {
-	client, err := genai.NewClient(ctx, option.WithAPIKey(cfg.APIKey))
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  cfg.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("genai.NewClient: %w", err)
 	}
@@ -56,29 +60,38 @@ func NewGeminiProcessor(ctx context.Context, cfg GeminiConfig) (*GeminiProcessor
 }
 
 func (p *GeminiProcessor) Close() {
-	p.client.Close()
+	// 新SDKの Client には Close メソッドがないためno-op
 }
 
 func (p *GeminiProcessor) Transcribe(ctx context.Context, oggData []byte) (*TranscriptionResult, error) {
-	model := p.client.GenerativeModel(p.cfg.TranscribeModel)
-	model.ResponseMIMEType = "application/json"
-	model.ResponseSchema = p.transcribeSchema
+	contents := []*genai.Content{
+		genai.NewContentFromParts([]*genai.Part{
+			genai.NewPartFromText(p.transcribePrompt),
+			genai.NewPartFromBytes(oggData, "audio/ogg"),
+		}, genai.RoleUser),
+	}
 
-	resp, err := model.GenerateContent(ctx,
-		genai.Text(p.transcribePrompt),
-		genai.Blob{MIMEType: "audio/ogg", Data: oggData},
-	)
+	config := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+		ResponseSchema:   p.transcribeSchema,
+	}
+
+	start := time.Now()
+	resp, err := p.client.Models.GenerateContent(ctx, p.cfg.TranscribeModel, contents, config)
+	log.Printf("[gemini] Transcribe latency: %v", time.Since(start))
 	if err != nil {
 		return nil, fmt.Errorf("GenerateContent: %w", err)
 	}
 
-	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
+	if resp == nil || len(resp.Candidates) == 0 ||
+		resp.Candidates[0].Content == nil ||
+		len(resp.Candidates[0].Content.Parts) == 0 {
 		return nil, fmt.Errorf("empty response from Gemini")
 	}
 
-	text, ok := resp.Candidates[0].Content.Parts[0].(genai.Text)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response part type")
+	text := resp.Candidates[0].Content.Parts[0].Text
+	if text == "" {
+		return nil, fmt.Errorf("empty response from Gemini")
 	}
 
 	var result TranscriptionResult
@@ -89,12 +102,59 @@ func (p *GeminiProcessor) Transcribe(ctx context.Context, oggData []byte) (*Tran
 }
 
 func (p *GeminiProcessor) Reason(ctx context.Context, t *TranscriptionResult) (string, error) {
-	// プレースホルダー: 将来 gemini-2.5-flash でゲーム応答生成
+	// プレースホルダー: 将来ゲーム応答生成
 	return "OK", nil
 }
 
+const askSystemPromptTemplate = `あなたはアマチュア無線のオペレーターです。あなたのコールサインは%sです。
+相手のコールサイン%sから質問を受けています。
+以下のルールに必ず従ってください:
+- 回答は日本語で、要点のみを1文で述べてください
+- 最大60文字程度に収めてください（フォーマット部分を除く）
+- マークダウン記法や箇条書きは使わず、プレーンテキストで回答してください
+- 無線交信らしい口調で話してください
+- コールサインは音声で読み上げられるため、1文字ずつ日本語のカタカナ読みに変換して出力してください
+  - 数字は「ゼロ イチ ニー サン ヨン ゴー ロク ナナ ハチ キュー」
+  - アルファベットは「エー ビー シー ディー イー エフ ジー エイチ アイ ジェイ ケー エル エム エヌ オー ピー キュー アール エス ティー ユー ブイ ダブリュー エックス ワイ ゼット」
+  - 各読みの区切りには半角スペースを入れてください
+  - 例: S4CQ → 「エス ヨン シー キュー」、S4AK → 「エス ヨン エー ケー」
+- 以下のフォーマットを守ってください（コールサイン部分は上記の読み変換を適用すること）
+  - <相手コールサインの読み>。こちら<自分コールサインの読み>。 <回答内容>。 どうぞ。`
+
+// Ask は TranscribeModel + Google Search で一問一答の回答を生成する。
+func (p *GeminiProcessor) Ask(ctx context.Context, sender, receiver, question string) (string, error) {
+	systemPrompt := fmt.Sprintf(askSystemPromptTemplate, receiver, sender)
+
+	contents := []*genai.Content{
+		genai.NewContentFromText(question, genai.RoleUser),
+	}
+
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
+	}
+
+	start := time.Now()
+	resp, err := p.client.Models.GenerateContent(ctx, p.cfg.TranscribeModel, contents, config)
+	log.Printf("[gemini] Ask latency: %v", time.Since(start))
+	if err != nil {
+		return "", fmt.Errorf("GenerateContent (Ask): %w", err)
+	}
+
+	if resp == nil || len(resp.Candidates) == 0 ||
+		resp.Candidates[0].Content == nil ||
+		len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty response from Gemini Ask")
+	}
+
+	text := resp.Candidates[0].Content.Parts[0].Text
+	if text == "" {
+		return "", fmt.Errorf("empty text from Gemini Ask")
+	}
+
+	return text, nil
+}
+
 // parseSchema は JSON バイト列を genai.Schema に変換する。
-// genai.Schema の構造に合わせて再帰的にパースする。
 func parseSchema(data []byte) (*genai.Schema, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -153,8 +213,6 @@ func convertSchema(raw map[string]any) (*genai.Schema, error) {
 			}
 		}
 	}
-
-	// propertyOrdering は genai.Schema では未サポートのため無視する
 
 	return s, nil
 }

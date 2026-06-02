@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"time"
 
 	hrabanopus "github.com/hraban/opus"
 	"github.com/kazzmir/opus-go/ogg"
@@ -31,11 +32,25 @@ const ttsPromptTemplate = `# AUDIO PROFILE: 無線オペレーターA
 
 ### DIRECTOR'S NOTES
 Style: このオペレーターは、無線の初心者に対してサポートをしています。
-Pacing: FM変調がかかった状態でも聞き取りやすく的確に、少し遅いスピードで話します。
+Pacing: FM変調がかかった状態でも聞き取りやすく的確に話します。
 Accent: 日本国内で無線を運用していたので、コールサインを話す際には日本語の訛りがあります。
 
 #### TRANSCRIPT
 %s こちらS4CA。%s`
+
+const ttsPromptTemplateS4CQ = `# AUDIO PROFILE: 無線オペレーターA
+## "質問に答える知識豊富な無線オペレータ"
+
+## THE SCENE: 無線のテストの相手をしている
+無線の初心者から来た質問に対して返答するテストオペレーションをしています。
+
+### DIRECTOR'S NOTES
+Style: このオペレーターは、無線の初心者に対してサポートをしています。
+Pacing: FM変調がかかった状態でも聞き取りやすく、少し早めに的確に話します。
+Accent: 日本国内で無線を運用していたので、コールサインを話す際には日本語の訛りがあります。
+
+#### TRANSCRIPT
+%s`
 
 // TTSClient は Gemini TTS クライアントを保持する。
 type TTSClient struct {
@@ -56,8 +71,18 @@ func NewTTSClient(ctx context.Context, apiKey, model string) (*TTSClient, error)
 
 // GenerateOggOpus はsender/messageからTTS音声を生成してOgg Opusで返す。
 func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string) ([]byte, error) {
-	prompt := fmt.Sprintf(ttsPromptTemplate, sender, message)
+	return t.GenerateOggOpusWithTemplate(ctx, ttsPromptTemplate, sender, message)
+}
 
+// GenerateOggOpusWithTemplate は指定テンプレートでTTS音声を生成してOgg Opusで返す。
+func (t *TTSClient) GenerateOggOpusWithTemplate(ctx context.Context, tmpl, sender, message string) ([]byte, error) {
+	return t.GenerateOggOpusFromPrompt(ctx, fmt.Sprintf(tmpl, sender, message))
+}
+
+// GenerateOggOpusFromPrompt は組み立て済みプロンプトからTTS音声を生成してOgg Opusで返す。
+func (t *TTSClient) GenerateOggOpusFromPrompt(ctx context.Context, prompt string) ([]byte, error) {
+
+	start := time.Now()
 	resp, err := t.client.Models.GenerateContent(ctx, t.model,
 		[]*genai.Content{
 			genai.NewContentFromText(prompt, genai.RoleUser),
@@ -67,12 +92,13 @@ func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string)
 			SpeechConfig: &genai.SpeechConfig{
 				VoiceConfig: &genai.VoiceConfig{
 					PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
-						VoiceName: "Achernar",
+						VoiceName: "Despina",
 					},
 				},
 			},
 		},
 	)
+	log.Printf("[gemini] TTS latency: %v", time.Since(start))
 	if err != nil {
 		return nil, fmt.Errorf("GenerateContent: %w", err)
 	}

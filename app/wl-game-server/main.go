@@ -48,6 +48,7 @@ func main() {
 	dispatcher := NewDispatcher()
 	dispatcher.Register("S4CE", NewEchoHandler(sendCh))
 	dispatcher.Register("S4CA", NewS4CAHandler(sendCh, ttsClient))
+	dispatcher.Register("S4CQ", NewS4CQHandler(sendCh, ttsClient, processor))
 
 	callsigns := NewCallsignManager("S4")
 

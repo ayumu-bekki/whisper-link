@@ -111,6 +111,8 @@ fn record_loop(
 
     // 録音バッファ (PCMサンプル列)
     let mut record_buf: Vec<i16> = Vec::new();
+    // フレームごとのRMS (末尾無音トリミング用、record_buf を FRAME_SIZE 区切りにしたときの各区間のRMS)
+    let mut frame_rms: Vec<u16> = Vec::new();
     // 録音状態
     let mut recording = false;
     // 最後にしきい値を超えた時刻
@@ -139,6 +141,7 @@ fn record_loop(
                 recording = false;
                 is_recording.store(false, Ordering::Relaxed);
                 record_buf.clear();
+                frame_rms.clear();
                 last_above_threshold = None;
                 record_started_at = None;
             }
@@ -161,6 +164,7 @@ fn record_loop(
                 recording = true;
                 is_recording.store(true, Ordering::Relaxed);
                 record_buf.clear();
+                frame_rms.clear();
                 record_started_at = Some(Instant::now());
                 info!("recording started (rms={rms})");
             }
@@ -168,6 +172,7 @@ fn record_loop(
 
         if recording {
             record_buf.extend_from_slice(samples);
+            frame_rms.push(rms);
 
             // 最大録音時間を超えたら強制終了
             if let Some(started) = record_started_at {
@@ -176,10 +181,12 @@ fn record_loop(
                         max_secs = max_recording_duration.as_secs(),
                         "max recording duration reached, flushing"
                     );
+                    // 最大時間到達時はまだ発話中の可能性が高いのでトリミングしない
                     flush_recording(&record_buf, &tx);
                     recording = false;
                     is_recording.store(false, Ordering::Relaxed);
                     record_buf.clear();
+                    frame_rms.clear();
                     last_above_threshold = None;
                     record_started_at = None;
                     continue;
@@ -192,15 +199,19 @@ fn record_loop(
                 .unwrap_or(true);
 
             if silence_elapsed {
+                // 末尾の無音フレームをトリミング（20ms余白を1フレーム残す）
+                let trimmed = trim_trailing_silence(&record_buf, &frame_rms, threshold_rms);
                 info!(
-                    samples = record_buf.len(),
-                    duration_ms = record_buf.len() as u64 * 1000 / SAMPLE_RATE as u64,
+                    samples = trimmed.len(),
+                    trimmed_from = record_buf.len(),
+                    duration_ms = trimmed.len() as u64 * 1000 / SAMPLE_RATE as u64,
                     "recording finished"
                 );
-                flush_recording(&record_buf, &tx);
+                flush_recording(trimmed, &tx);
                 recording = false;
                 is_recording.store(false, Ordering::Relaxed);
                 record_buf.clear();
+                frame_rms.clear();
                 last_above_threshold = None;
                 record_started_at = None;
             }
@@ -293,6 +304,28 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
     }
 
     Ok(buf.into_inner())
+}
+
+/// 録音末尾の無音区間（RMSが閾値未満のフレーム）をトリミングする。
+/// 発話直後の不自然な切れを防ぐため、末尾に TRAIL_FRAMES 分の余白を残す。
+/// `frame_rms` は `record_buf` を FRAME_SIZE 区切りにした各区間のRMS。
+fn trim_trailing_silence<'a>(record_buf: &'a [i16], frame_rms: &[u16], threshold_rms: u16) -> &'a [i16] {
+    // 20ms 余白（= 1 フレーム）を残す
+    const TRAIL_FRAMES: usize = 1;
+
+    if frame_rms.is_empty() {
+        return record_buf;
+    }
+
+    // 末尾から、閾値未満のフレームを TRAIL_FRAMES を超えない範囲で削る
+    let mut last = frame_rms.len() - 1;
+    while last > TRAIL_FRAMES && frame_rms[last] < threshold_rms {
+        last -= 1;
+    }
+
+    // フレーム数 last+1 に対応するサンプル数（最終フレームは端数になりうるので buf 長で上限）
+    let keep_samples = ((last + 1) * FRAME_SIZE).min(record_buf.len());
+    &record_buf[..keep_samples]
 }
 
 fn compute_rms(samples: &[i16]) -> u16 {

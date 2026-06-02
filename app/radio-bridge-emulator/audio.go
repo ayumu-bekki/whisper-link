@@ -44,6 +44,7 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 	maxDuration := time.Duration(cfg.InputMaxRecordingSecs) * time.Second
 
 	var opusFrames [][]byte
+	var frameRMS []uint16
 	recording := false
 	var lastAboveThreshold time.Time
 	var recordStarted time.Time
@@ -65,6 +66,7 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 				recording = true
 				recordStarted = time.Now()
 				opusFrames = nil
+				frameRMS = nil
 				log.Printf("[recorder] recording started (rms=%d)", rms)
 			}
 		}
@@ -77,6 +79,7 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 				continue
 			}
 			opusFrames = append(opusFrames, opusBuf[:n])
+			frameRMS = append(frameRMS, rms)
 
 			if time.Since(recordStarted) >= maxDuration {
 				log.Printf("[recorder] max duration reached, flushing")
@@ -93,7 +96,17 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 	if len(opusFrames) == 0 {
 		return nil, nil
 	}
-	return encodeToOggOpus(opusFrames), nil
+
+	// 末尾の無音フレームをトリミング（20ms余白を残す）
+	const trailFrames = 1 // 20ms 余白
+	last := len(opusFrames) - 1
+	for last > trailFrames && frameRMS[last] < threshold {
+		last--
+	}
+	trimmed := opusFrames[:last+1]
+	log.Printf("[recorder] trimmed %d → %d frames", len(opusFrames), len(trimmed))
+
+	return encodeToOggOpus(trimmed), nil
 }
 
 func encodeToOggOpus(frames [][]byte) []byte {

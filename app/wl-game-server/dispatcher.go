@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 )
@@ -73,6 +74,43 @@ func (h *S4CAHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 		return nil // エラーでも処理継続
 	}
 	log.Printf("[S4CA] TTS generated %d bytes, sending", len(oggData))
+	select {
+	case h.sendCh <- oggData:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// S4CQHandler はS4CQ宛メッセージをGoogle検索付きGeminiで回答し、TTSで音声化して返す。
+type S4CQHandler struct {
+	sendCh    chan<- []byte
+	ttsClient *TTSClient
+	processor *GeminiProcessor
+}
+
+func NewS4CQHandler(sendCh chan<- []byte, ttsClient *TTSClient, processor *GeminiProcessor) *S4CQHandler {
+	return &S4CQHandler{sendCh: sendCh, ttsClient: ttsClient, processor: processor}
+}
+
+func (h *S4CQHandler) Handle(ctx context.Context, item TranscriptionItem, response string, audioData []byte) error {
+	log.Printf("[S4CQ] sender=%s message=%q — asking Gemini", item.Sender, item.Message)
+
+	answer, err := h.processor.Ask(ctx, item.Sender, item.Receiver, item.Message)
+	if err != nil {
+		log.Printf("[S4CQ] Ask error: %v", err)
+		return nil
+	}
+	log.Printf("[S4CQ] answer: %s", answer)
+
+	ttsPrompt := fmt.Sprintf(ttsPromptTemplateS4CQ, answer)
+	oggData, err := h.ttsClient.GenerateOggOpusFromPrompt(ctx, ttsPrompt)
+	if err != nil {
+		log.Printf("[S4CQ] TTS error: %v", err)
+		return nil
+	}
+	log.Printf("[S4CQ] TTS generated %d bytes, sending", len(oggData))
+
 	select {
 	case h.sendCh <- oggData:
 	case <-ctx.Done():
