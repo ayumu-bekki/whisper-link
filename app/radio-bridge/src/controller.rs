@@ -136,7 +136,7 @@ impl Controller {
                     duration_secs = entry.duration.as_secs_f32(),
                     "playing audio"
                 );
-                let data = entry.ogg_opus_data.clone();
+                let data = entry.ogg_opus_data;
                 let player_device = player.device.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let p = AudioPlayer::new(&player_device);

@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Duration::from_millis(config.audio.input_silence_ms),
             Duration::from_secs(config.audio.input_max_recording_secs),
         )
-        .map_err(|e| -> Box<dyn std::error::Error> { e })?,
+        .map_err(Into::into)?,
     );
     info!("audio recorder started on device: {}", config.audio.input_device);
 

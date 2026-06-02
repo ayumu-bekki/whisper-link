@@ -161,7 +161,25 @@ sudo dpkg -i /tmp/protobuf-compiler.deb
 ### ビルド
 
 ```bash
-cargo build
+# 通常ビルド (GPIO 使用、Raspberry Pi 向け)
+cargo build --release
+
+# GPIO なしビルド (テスト用、GPIO ハードウェア不要)
+cargo build --release --features stub-gpio
+```
+
+`stub-gpio` フィーチャーを有効にすると `rppal` への依存がなくなり、GPIO 操作はログ出力のみの no-op になる。
+また `config.toml` の `[gpio]` セクションが省略可能になる。
+
+### macOS でのビルド検証 (`cargo check`)
+
+macOS では `coreaudio-sys` のビルドに Xcode SDK パスと clang ターゲットの明示が必要:
+
+```bash
+SDK=$(xcrun --sdk macosx --show-sdk-path)
+COREAUDIO_SDK_PATH="$SDK" \
+BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-apple-darwin -isysroot $SDK" \
+cargo check --features stub-gpio
 ```
 
 ### 実行
@@ -172,6 +190,9 @@ cargo run
 
 # 設定ファイルを指定
 cargo run -- /path/to/config.toml
+
+# GPIO なしで実行
+cargo run --features stub-gpio -- config.toml
 ```
 
 ### 動作確認環境

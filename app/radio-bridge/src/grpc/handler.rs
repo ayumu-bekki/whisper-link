@@ -2,6 +2,7 @@ use crate::audio::recorder::AudioRecorder;
 use crate::queue::{AudioQueue, QueueError};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn, error};
@@ -47,72 +48,93 @@ impl TransceiverService for TransceiverHandler {
         // レコーダーのブロードキャストを購読
         let mut recorder_rx = self.recorder.subscribe();
 
+        // どちらかのタスクが終了したらもう一方もキャンセルする
+        let cancel = CancellationToken::new();
+
         // サーバー→クライアント: レコーダーからの音声を転送するタスク
         let tx_recorder = tx.clone();
         let peer_recv = peer.clone();
+        let cancel_recv = cancel.clone();
         tokio::spawn(async move {
             loop {
-                match recorder_rx.recv().await {
-                    Ok(ogg_data) => {
-                        if tx_recorder
-                            .send(Ok(AudioChunk { ogg_opus_data: ogg_data }))
-                            .await
-                            .is_err()
-                        {
-                            info!(peer = %peer_recv, "client disconnected (recorder stream)");
-                            break;
+                tokio::select! {
+                    result = recorder_rx.recv() => {
+                        match result {
+                            Ok(ogg_data) => {
+                                if tx_recorder
+                                    .send(Ok(AudioChunk { ogg_opus_data: ogg_data }))
+                                    .await
+                                    .is_err()
+                                {
+                                    info!(peer = %peer_recv, "client disconnected (recorder stream)");
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(peer = %peer_recv, skipped = n, "recorder broadcast lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                error!(peer = %peer_recv, "recorder broadcast closed");
+                                break;
+                            }
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(peer = %peer_recv, skipped = n, "recorder broadcast lagged");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        error!(peer = %peer_recv, "recorder broadcast closed");
+                    _ = cancel_recv.cancelled() => {
                         break;
                     }
                 }
             }
+            cancel_recv.cancel();
         });
 
         // クライアント→サーバー: 受信した音声をキューに積むタスク
+        let cancel_send = cancel.clone();
         tokio::spawn(async move {
             loop {
-                match inbound.message().await {
-                    Ok(Some(chunk)) => {
-                        let bytes = chunk.ogg_opus_data.len();
-                        let result = {
-                            let mut q = queue.lock().unwrap();
-                            q.push(chunk.ogg_opus_data)
-                        };
-                        match result {
-                            Ok(pos) => {
-                                info!(peer = %peer, bytes, position = pos, "audio queued");
+                tokio::select! {
+                    msg = inbound.message() => {
+                        match msg {
+                            Ok(Some(chunk)) => {
+                                let bytes = chunk.ogg_opus_data.len();
+                                let result = {
+                                    let mut q = queue.lock().unwrap();
+                                    q.push(chunk.ogg_opus_data)
+                                };
+                                match result {
+                                    Ok(pos) => {
+                                        info!(peer = %peer, bytes, position = pos, "audio queued");
+                                    }
+                                    Err(QueueError::TooLong(d)) => {
+                                        warn!(
+                                            peer = %peer,
+                                            duration_secs = d.as_secs_f32(),
+                                            "audio rejected: too long"
+                                        );
+                                    }
+                                    Err(QueueError::QueueFull(max)) => {
+                                        warn!(peer = %peer, max, "audio rejected: queue full");
+                                    }
+                                    Err(QueueError::ParseError(msg)) => {
+                                        warn!(peer = %peer, %msg, "audio rejected: parse error");
+                                    }
+                                }
                             }
-                            Err(QueueError::TooLong(d)) => {
-                                warn!(
-                                    peer = %peer,
-                                    duration_secs = d.as_secs_f32(),
-                                    "audio rejected: too long"
-                                );
+                            Ok(None) => {
+                                info!(peer = %peer, "client closed send stream");
+                                break;
                             }
-                            Err(QueueError::QueueFull(max)) => {
-                                warn!(peer = %peer, max, "audio rejected: queue full");
-                            }
-                            Err(QueueError::ParseError(msg)) => {
-                                warn!(peer = %peer, %msg, "audio rejected: parse error");
+                            Err(e) => {
+                                error!(peer = %peer, "inbound stream error: {e}");
+                                break;
                             }
                         }
                     }
-                    Ok(None) => {
-                        info!(peer = %peer, "client closed send stream");
-                        break;
-                    }
-                    Err(e) => {
-                        error!(peer = %peer, "inbound stream error: {e}");
+                    _ = cancel_send.cancelled() => {
                         break;
                     }
                 }
             }
+            cancel_send.cancel();
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))

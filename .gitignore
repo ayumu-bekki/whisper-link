@@ -7,6 +7,15 @@
 app/**/target/
 app/**/*.rs.bk
 
+# Go binaries
+app/radio-bridge-emulator/radio-bridge-emulator
+app/radio-bridge-test-client/radio-bridge-test-client
+app/wl-game-server/wl-game-server
+app/wl-game-server-test-client/wl-game-server-test-client
+
+# wl-game-server config (API キー等を含むため)
+app/wl-game-server/config.toml
+
 # Generated protobuf code
 app/proto/gen/
 

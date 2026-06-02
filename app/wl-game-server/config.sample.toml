@@ -1,0 +1,19 @@
+[radio_bridge]
+#host = "192.168.100.18"
+host = "127.0.0.1"
+port = 50051
+reconnect_interval_secs = 5
+max_reconnect_attempts  = 0   # 0 = 無制限
+
+[gemini]
+api_key                = "GEMINI_API_KEY"
+transcribe_model       = "gemini-3.1-flash-lite"
+reasoning_model        = "gemini-3.5-flash"
+transcribe_prompt_file = "transcribe_prompt.txt"
+transcribe_schema_file = "transcribe_schema.json"
+
+[log]
+level = "info"
+
+[websocket]
+listen_addr = ":8080"

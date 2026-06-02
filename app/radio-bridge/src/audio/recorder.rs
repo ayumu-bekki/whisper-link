@@ -10,14 +10,15 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 const SAMPLE_RATE: u32 = 48000;
-const CHANNELS: u32 = 2;
+const CAPTURE_CHANNELS: u32 = 2; // ALSAキャプチャはステレオ
+const ENCODE_CHANNELS: u32 = 1;  // Opusエンコードはモノラル
 // 20ms フレーム @ 48kHz
 const FRAME_SIZE: usize = 960;
 
 /// マイク入力レベルを監視し、音声検知時に録音→Ogg Opusエンコード→ブロードキャストする。
 /// `is_recording` フラグで現在録音中かどうかをコントローラから参照できる。
 pub struct AudioRecorder {
-    pub tx: broadcast::Sender<Vec<u8>>,
+    tx: broadcast::Sender<Vec<u8>>,
     is_recording: Arc<AtomicBool>,
     is_transmitting: Arc<AtomicBool>,
     stop_recording: Arc<AtomicBool>,
@@ -68,11 +69,10 @@ impl AudioRecorder {
         self.is_transmitting.store(transmitting, Ordering::Relaxed);
     }
 
-    /// 進行中の録音を強制終了する。is_recording を即座に false にし、
-    /// レコーダースレッドが次フレームで内部状態をリセットする。
+    /// 進行中の録音を強制終了する。
+    /// レコーダースレッドが次フレームでフラグを検知して is_recording を false にする。
     pub fn force_stop_recording(&self) {
         self.stop_recording.store(true, Ordering::Relaxed);
-        self.is_recording.store(false, Ordering::Relaxed);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
@@ -94,7 +94,7 @@ fn record_loop(
 
     {
         let hwp = HwParams::any(&pcm)?;
-        hwp.set_channels(CHANNELS)?;
+        hwp.set_channels(CAPTURE_CHANNELS)?;
         hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest)?;
         hwp.set_format(Format::s16())?;
         hwp.set_access(Access::RWInterleaved)?;
@@ -107,7 +107,7 @@ fn record_loop(
 
     let io = pcm.io_i16()?;
     // ステレオインターリーブ (L, R, L, R, ...) で受け取る
-    let mut pcm_buf = vec![0i16; FRAME_SIZE * CHANNELS as usize];
+    let mut pcm_buf = vec![0i16; FRAME_SIZE * CAPTURE_CHANNELS as usize];
 
     // 録音バッファ (PCMサンプル列)
     let mut record_buf: Vec<i16> = Vec::new();
@@ -146,14 +146,13 @@ fn record_loop(
         }
 
         // ステレオ→モノラル: L/R を平均してダウンミックス
-        let stereo = &pcm_buf[..frames * CHANNELS as usize];
+        let stereo = &pcm_buf[..frames * CAPTURE_CHANNELS as usize];
         let samples: Vec<i16> = stereo
-            .chunks(CHANNELS as usize)
+            .chunks(CAPTURE_CHANNELS as usize)
             .map(|ch| ((ch[0] as i32 + ch[1] as i32) / 2) as i16)
             .collect();
         let samples = samples.as_slice();
         let rms = compute_rms(samples);
-        //debug!(rms, threshold = threshold_rms, "input level");
 
         if rms >= threshold_rms && !is_transmitting.load(Ordering::Relaxed) {
             last_above_threshold = Some(Instant::now());
@@ -224,6 +223,7 @@ fn flush_recording(pcm_samples: &[i16], tx: &broadcast::Sender<Vec<u8>>) {
 
 /// PCMサンプル列をOgg Opusバイナリに変換する。
 fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    debug_assert_eq!(ENCODE_CHANNELS, 1, "encode_to_ogg_opus expects mono input");
     let mut encoder = Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
     let serial: u32 = 0x57485052; // "WHPR"
 
@@ -260,7 +260,6 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
         let chunk = match chunk_iter.next() {
             Some(c) => c,
             None => {
-                // 残りのパケットを EOS ページとして書き出す
                 if let Some(pkt) = pending.take() {
                     pw.write_packet(
                         pkt,
@@ -273,7 +272,6 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
             }
         };
 
-        // 端数フレームはゼロパディング
         let encoded_len = if chunk.len() == FRAME_SIZE {
             encoder.encode(chunk, &mut opus_buf)?
         } else {
@@ -284,7 +282,6 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
 
         granule_pos += FRAME_SIZE as u64;
 
-        // 前のパケットを NormalPacket として書き出し、今のを pending に
         if let Some(prev) = pending.replace(opus_buf[..encoded_len].to_vec()) {
             pw.write_packet(
                 prev,

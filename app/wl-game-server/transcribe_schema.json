@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "properties": {
+    "item": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "receiver": {
+            "type": "string"
+          },
+          "sender": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "propertyOrdering": [
+          "receiver",
+          "sender",
+          "message"
+        ],
+        "required": [
+          "receiver",
+          "sender",
+          "message"
+        ]
+      }
+    }
+  },
+  "propertyOrdering": [
+    "item"
+  ]
+}
