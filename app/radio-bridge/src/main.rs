@@ -16,7 +16,7 @@ use tonic::transport::Server;
 use tracing::info;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Duration::from_millis(config.audio.input_silence_ms),
             Duration::from_secs(config.audio.input_max_recording_secs),
         )
-        .map_err(Into::into)?,
+        ?,
     );
     info!("audio recorder started on device: {}", config.audio.input_device);
 

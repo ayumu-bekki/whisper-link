@@ -1,0 +1,41 @@
+services:
+  wl-game-server:
+    build:
+      context: .
+      dockerfile: wl-game-server/Dockerfile
+    ports:
+      - 8080:8080
+    volumes:
+      - type: bind
+        source: ./wl-game-server/config.toml
+        target: /app/config.toml
+        read_only: true 
+      - type: bind
+        source: ./wl-game-server/transcribe_prompt.txt
+        target: /app/transcribe_prompt.txt
+        read_only: true 
+      - type: bind
+        source: ./wl-game-server/transcribe_schema.json
+        target: /app/transcribe_schema.json
+    read_only: true 
+    depends_on:
+      - radio-bridge
+    networks:
+      - whisperlink-network
+
+  radio-bridge:
+    build:
+      context: .
+      dockerfile: radio-bridge/Dockerfile
+    volumes:
+      - type: bind
+        source: ./radio-bridge/config.toml
+        target: /app/config.toml
+        read_only: true 
+    privileged: true  # GPIO (/dev/gpiochip*) と ALSA (/dev/snd/*) へのアクセスに privileged が必要
+    networks:
+      - whisperlink-network
+
+networks:
+  whisperlink-network:
+

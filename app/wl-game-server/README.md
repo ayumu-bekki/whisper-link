@@ -5,7 +5,25 @@
 ## 依存ライブラリ (MacPorts)
 
 ```bash
-sudo port install soxr pkgconfig
+sudo port install soxr pkgconfig protobuf3-cpp
+```
+
+## Proto ファイルの生成
+
+`wl-game-server/proto/` 以下の `.pb.go` は Docker ビルド時に自動生成されます。
+ローカルビルドでは手動で生成が必要です。
+
+**プラグインのインストール（初回のみ）**
+
+```bash
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+```
+
+**生成実行（`wl-game-server/` ディレクトリで実行）**
+
+```bash
+go generate ./...
 ```
 
 ## ビルド・起動
