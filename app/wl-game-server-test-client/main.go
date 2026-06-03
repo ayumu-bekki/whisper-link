@@ -24,7 +24,7 @@ type wsResponse struct {
 }
 
 func main() {
-	addr := flag.String("addr", "ws://localhost:8080/ws", "WebSocket サーバーアドレス")
+	addr := flag.String("addr", "ws://192.168.100.18:8080/ws", "WebSocket サーバーアドレス")
 	flag.Parse()
 
 	log.Printf("接続先: %s", *addr)

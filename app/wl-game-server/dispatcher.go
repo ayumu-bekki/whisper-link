@@ -103,18 +103,24 @@ func (h *S4CQHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 	}
 	log.Printf("[S4CQ] answer: %s", answer)
 
-	ttsPrompt := fmt.Sprintf(ttsPromptTemplateS4CQ, answer)
-	oggData, err := h.ttsClient.GenerateOggOpusFromPrompt(ctx, ttsPrompt)
-	if err != nil {
-		log.Printf("[S4CQ] TTS error: %v", err)
-		return nil
-	}
-	log.Printf("[S4CQ] TTS generated %d bytes, sending", len(oggData))
+	// 回答を冒頭呼び出し + 本文(句点)のチャンクに分割し、逐次 TTS して
+	// できた順に送出する。最初の短い冒頭チャンクが先に届くことで、radio-bridge が
+	// 全文の TTS 完了を待たずに再生を開始でき、初音までの体感レイテンシを短縮する。
+	chunks := splitAnswerForTTS(answer)
+	for i, chunk := range chunks {
+		ttsPrompt := fmt.Sprintf(ttsPromptTemplateS4CQ, chunk)
+		oggData, err := h.ttsClient.GenerateOggOpusFromPrompt(ctx, ttsPrompt)
+		if err != nil {
+			log.Printf("[S4CQ] TTS error (chunk %d/%d): %v", i+1, len(chunks), err)
+			continue // 1 チャンクの失敗で全体を止めない
+		}
+		log.Printf("[S4CQ] TTS generated %d bytes (chunk %d/%d), sending", len(oggData), i+1, len(chunks))
 
-	select {
-	case h.sendCh <- oggData:
-	case <-ctx.Done():
-		return ctx.Err()
+		select {
+		case h.sendCh <- oggData:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
