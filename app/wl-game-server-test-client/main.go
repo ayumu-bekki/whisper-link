@@ -82,63 +82,74 @@ func main() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	inputCh := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for {
+			fmt.Print("> ")
+			if !scanner.Scan() {
+				close(inputCh)
+				return
+			}
+			inputCh <- scanner.Text()
+		}
+	}()
+
 	for {
-		fmt.Print("> ")
-		if !scanner.Scan() {
-			break
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		switch line {
-		case "login", "l":
-			send(conn, wsCommand{Type: "login"})
-
-		case "quit", "q", "exit":
-			conn.WriteMessage(
-				websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"),
-			)
-			select {
-			case <-recvDone:
-			case <-time.After(2 * time.Second):
-			}
-			return
-
-		case "help", "h", "?":
-			printHelp()
-
-		default:
-			// 生JSONをそのまま送信
-			if strings.HasPrefix(line, "{") {
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(line)); err != nil {
-					log.Printf("送信エラー: %v", err)
-				}
-				fmt.Printf(">> %s\n", line)
-			} else {
-				fmt.Println("不明なコマンドです。help で使い方を確認してください。")
-			}
-		}
-
 		select {
 		case <-recvDone:
+			log.Println("サーバーとの接続が閉じられたため終了します。")
 			return
-		default:
+		case line, ok := <-inputCh:
+			if !ok {
+				// EOF (Ctrl+D)
+				conn.WriteMessage(
+					websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"),
+				)
+				select {
+				case <-recvDone:
+				case <-time.After(2 * time.Second):
+				}
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			switch line {
+			case "login", "l":
+				send(conn, wsCommand{Type: "login"})
+
+			case "quit", "q", "exit":
+				conn.WriteMessage(
+					websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"),
+				)
+				select {
+				case <-recvDone:
+				case <-time.After(2 * time.Second):
+				}
+				return
+
+			case "help", "h", "?":
+				printHelp()
+
+			default:
+				// 生JSONをそのまま送信
+				if strings.HasPrefix(line, "{") {
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(line)); err != nil {
+						log.Printf("送信エラー: %v", err)
+					}
+					fmt.Printf(">> %s\n", line)
+				} else {
+					fmt.Println("不明なコマンドです。help で使い方を確認してください。")
+				}
+			}
 		}
 	}
 
-	// EOF (Ctrl+D) の場合も正常クローズ
-	conn.WriteMessage(
-		websocket.CloseMessage,
-		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"),
-	)
-	select {
-	case <-recvDone:
-	case <-time.After(2 * time.Second):
-	}
 }
 
 // buildWSURL は host:port 形式の引数を WebSocket URL に変換する。
