@@ -15,11 +15,27 @@ var upgrader = websocket.Upgrader{
 // WSServer は WebSocket 接続を受け付け、セッションを管理する。
 type WSServer struct {
 	callsigns *CallsignManager
+	registry  *SessionRegistry
+	processor *GeminiProcessor
+	ttsClient *TTSClient
+	sendCh    chan<- []byte
 	ctx       context.Context
 }
 
-func NewWSServer(callsigns *CallsignManager) *WSServer {
-	return &WSServer{callsigns: callsigns}
+func NewWSServer(
+	callsigns *CallsignManager,
+	registry *SessionRegistry,
+	processor *GeminiProcessor,
+	ttsClient *TTSClient,
+	sendCh chan<- []byte,
+) *WSServer {
+	return &WSServer{
+		callsigns: callsigns,
+		registry:  registry,
+		processor: processor,
+		ttsClient: ttsClient,
+		sendCh:    sendCh,
+	}
 }
 
 // ServeHTTP は http.Handler として WebSocket アップグレードを処理する。
@@ -29,7 +45,7 @@ func (s *WSServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[WS] upgrade error: %v", err)
 		return
 	}
-	session := newWSSession(conn, s.callsigns)
+	session := newWSSession(conn, s.callsigns, s.registry, s.processor, s.ttsClient, s.sendCh)
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {

@@ -31,7 +31,8 @@
 bridge handleAudio → Transcribe → Dispatch(item)
   ├ item.Receiver が SessionRegistry にヒット?
   │   Yes → session.HandleMessage(ctx, item) → chat.SendMessage → 応答テキスト
-  │          → splitAnswerForTTS → ttsClient.GenerateOggOpusFromPrompt → sendCh
+  │          → splitAnswerForTTS → streamTTSChunks（並列 TTS 生成→PCM 連結→
+  │            単一 Ogg Opus を 1 回送出）→ sendCh
   │   No  → 既存 handlers[receiver]（S4CE/S4CA/S4CQ）or fallback（変更なし）
 ```
 
@@ -83,7 +84,8 @@ func (r *SessionRegistry) Lookup(callsign string) (*wsSession, bool) // RLock
   func (s *wsSession) HandleMessage(ctx context.Context, item TranscriptionItem) error
   // chatMu でロック → chat.SendMessage(ctx, genai.Part{Text: item.Message})
   // 応答テキスト抽出 → splitAnswerForTTS → ttsPromptTemplateS4CQ で
-  //   ttsClient.GenerateOggOpusFromPrompt → sendCh（ctx.Done で中断）
+  //   streamTTSChunks（並列 TTS 生成→PCM 連結→単一 Ogg Opus を 1 回送出）→ sendCh
+  //   （ctx.Done で中断）
   ```
 - `wsResponse` に `PeerCallsigns []string `json:"peer_callsigns,omitempty"`` を追加。
 - `defaultChatSystemInstruction` 定数（雑談継続用。`askSystemPromptTemplate` のコールサイン

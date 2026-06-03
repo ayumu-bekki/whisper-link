@@ -154,6 +154,15 @@ func (p *GeminiProcessor) Ask(ctx context.Context, sender, receiver, question st
 	return text, nil
 }
 
+// NewChat は SystemInstruction 付きの genai チャットセッションを生成する。
+// systemInstruction は将来シナリオごとに差し替える前提で引数で受け取る。
+func (p *GeminiProcessor) NewChat(ctx context.Context, systemInstruction string) (*genai.Chat, error) {
+	cfg := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
+	}
+	return p.client.Chats.Create(ctx, p.cfg.ReasoningModel, cfg, nil)
+}
+
 // parseSchema は JSON バイト列を genai.Schema に変換する。
 func parseSchema(data []byte) (*genai.Schema, error) {
 	var raw map[string]any

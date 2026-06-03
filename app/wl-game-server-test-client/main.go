@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -18,18 +19,31 @@ type wsCommand struct {
 }
 
 type wsResponse struct {
-	Type     string `json:"type"`
-	Callsign string `json:"callsign,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Type          string   `json:"type"`
+	Callsign      string   `json:"callsign,omitempty"`
+	PeerCallsigns []string `json:"peer_callsigns,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 func main() {
-	addr := flag.String("addr", "ws://192.168.100.18:8080/ws", "WebSocket サーバーアドレス")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "使い方: %s <host:port>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "例:\n")
+		fmt.Fprintf(os.Stderr, "  %s [::1]:8080\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s 192.168.100.18:8080\n", os.Args[0])
+	}
 	flag.Parse()
 
-	log.Printf("接続先: %s", *addr)
+	if flag.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "エラー: 接続先 (host:port) を指定してください。")
+		flag.Usage()
+		os.Exit(2)
+	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(*addr, nil)
+	addr := buildWSURL(flag.Arg(0))
+	log.Printf("接続先: %s", addr)
+
+	conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
 	if err != nil {
 		log.Fatalf("接続失敗: %v", err)
 	}
@@ -59,7 +73,7 @@ func main() {
 			}
 			switch resp.Type {
 			case "login":
-				fmt.Printf("<< [login] コールサイン: %s\n", resp.Callsign)
+				fmt.Printf("<< [login] コールサイン: %s / 相手: %v\n", resp.Callsign, resp.PeerCallsigns)
 			case "error":
 				fmt.Printf("<< [error] %s\n", resp.Error)
 			default:
@@ -125,6 +139,16 @@ func main() {
 	case <-recvDone:
 	case <-time.After(2 * time.Second):
 	}
+}
+
+// buildWSURL は host:port 形式の引数を WebSocket URL に変換する。
+// ws:// や wss:// から始まる完全URLが渡された場合はそのまま扱う。
+func buildWSURL(arg string) string {
+	if strings.HasPrefix(arg, "ws://") || strings.HasPrefix(arg, "wss://") {
+		return arg
+	}
+	u := url.URL{Scheme: "ws", Host: arg, Path: "/ws"}
+	return u.String()
 }
 
 func send(conn *websocket.Conn, v any) {

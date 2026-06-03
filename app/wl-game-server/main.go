@@ -45,7 +45,9 @@ func main() {
 
 	sendCh := make(chan []byte, 16)
 
-	dispatcher := NewDispatcher()
+	registry := NewSessionRegistry()
+
+	dispatcher := NewDispatcher(registry)
 	dispatcher.Register("S4CE", NewEchoHandler(sendCh))
 	dispatcher.Register("S4CA", NewS4CAHandler(sendCh, ttsClient))
 	dispatcher.Register("S4CQ", NewS4CQHandler(sendCh, ttsClient, processor))
@@ -56,7 +58,7 @@ func main() {
 	if wsAddr == "" {
 		wsAddr = defaultWSListenAddr
 	}
-	wsServer := NewWSServer(callsigns)
+	wsServer := NewWSServer(callsigns, registry, processor, ttsClient, sendCh)
 	go func() {
 		if err := wsServer.Run(ctx, wsAddr); err != nil {
 			log.Printf("WSServer.Run: %v", err)

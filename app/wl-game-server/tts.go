@@ -81,7 +81,17 @@ func (t *TTSClient) GenerateOggOpusWithTemplate(ctx context.Context, tmpl, sende
 
 // GenerateOggOpusFromPrompt は組み立て済みプロンプトからTTS音声を生成してOgg Opusで返す。
 func (t *TTSClient) GenerateOggOpusFromPrompt(ctx context.Context, prompt string) ([]byte, error) {
+	pcm48k, err := t.GeneratePCM48kFromPrompt(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+	return encodePCMToOggOpus(pcm48k)
+}
 
+// GeneratePCM48kFromPrompt はプロンプトからTTS音声を生成し、48kHz mono の PCM(int16)で返す。
+// 複数チャンクを並列生成して 1 本の Ogg Opus に結合する場合、Ogg コンテナにする前の
+// PCM 段階で連結する必要があるため、エンコード前のこの関数を公開している。
+func (t *TTSClient) GeneratePCM48kFromPrompt(ctx context.Context, prompt string) ([]int16, error) {
 	start := time.Now()
 	resp, err := t.client.Models.GenerateContent(ctx, t.model,
 		[]*genai.Content{
@@ -128,7 +138,7 @@ func (t *TTSClient) GenerateOggOpusFromPrompt(ctx context.Context, prompt string
 	log.Printf("[tts] resampled %d → %d samples (%.1fs @ 48kHz)",
 		len(pcm24k), len(pcm48k), float64(len(pcm48k))/ttsOutputSampleRate)
 
-	return encodePCMToOggOpus(pcm48k)
+	return pcm48k, nil
 }
 
 // stripWAVHeader はデータ先頭に "RIFF" マジックがある場合、"data" チャンクのペイロードを返す。

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 )
@@ -15,12 +14,14 @@ type Dispatcher struct {
 	handlers map[string]Handler
 	mu       sync.RWMutex
 	fallback Handler
+	registry *SessionRegistry // nil 許容: 未注入時は従来の静的ハンドラのみ
 }
 
-func NewDispatcher() *Dispatcher {
+func NewDispatcher(registry *SessionRegistry) *Dispatcher {
 	return &Dispatcher{
 		handlers: make(map[string]Handler),
 		fallback: &SystemHandler{},
+		registry: registry,
 	}
 }
 
@@ -31,9 +32,20 @@ func (d *Dispatcher) Register(callsign string, handler Handler) {
 }
 
 // Dispatch は TranscriptionResult の各 item を receiver に対応するハンドラへ渡す。
-// 登録されていない receiver は fallback (SystemHandler) で処理する。
+// まず SessionRegistry で動的払い出しCS宛てを優先解決し、次に静的ハンドラ、最後に fallback。
 func (d *Dispatcher) Dispatch(ctx context.Context, result *TranscriptionResult, response string, audioData []byte) error {
 	for _, item := range result.Items {
+		// 動的払い出しCS宛て: WSセッションのチャットへ流す
+		if d.registry != nil {
+			if sess, ok := d.registry.Lookup(item.Receiver); ok {
+				if err := sess.HandleMessage(ctx, item); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+
+		// 静的ハンドラ (S4CE/S4CA/S4CQ 等) or fallback
 		d.mu.RLock()
 		h, ok := d.handlers[item.Receiver]
 		d.mu.RUnlock()
@@ -103,26 +115,12 @@ func (h *S4CQHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 	}
 	log.Printf("[S4CQ] answer: %s", answer)
 
-	// 回答を冒頭呼び出し + 本文(句点)のチャンクに分割し、逐次 TTS して
-	// できた順に送出する。最初の短い冒頭チャンクが先に届くことで、radio-bridge が
-	// 全文の TTS 完了を待たずに再生を開始でき、初音までの体感レイテンシを短縮する。
+	// 回答を冒頭呼び出し + 本文(句点)のチャンクに分割し、全チャンクを並列に TTS 生成する。
+	// 各チャンクの生成を同時に走らせることで全体の生成時間を短縮しつつ、結果の PCM は
+	// チャンク順に連結して単一の Ogg Opus にまとめ、1 パケットとして送出する
+	// (radio-bridge に他プロセスの音声が割り込むのを防ぐため。詳細は streamTTSChunks)。
 	chunks := splitAnswerForTTS(answer)
-	for i, chunk := range chunks {
-		ttsPrompt := fmt.Sprintf(ttsPromptTemplateS4CQ, chunk)
-		oggData, err := h.ttsClient.GenerateOggOpusFromPrompt(ctx, ttsPrompt)
-		if err != nil {
-			log.Printf("[S4CQ] TTS error (chunk %d/%d): %v", i+1, len(chunks), err)
-			continue // 1 チャンクの失敗で全体を止めない
-		}
-		log.Printf("[S4CQ] TTS generated %d bytes (chunk %d/%d), sending", len(oggData), i+1, len(chunks))
-
-		select {
-		case h.sendCh <- oggData:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
+	return streamTTSChunks(ctx, h.ttsClient, h.sendCh, chunks, "[S4CQ]")
 }
 
 // EchoHandler は受信した音声データをそのまま radio-bridge へ送り返す。
