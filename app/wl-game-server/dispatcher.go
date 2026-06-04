@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 )
@@ -15,13 +16,15 @@ type Dispatcher struct {
 	mu       sync.RWMutex
 	fallback Handler
 	registry *SessionRegistry // nil 許容: 未注入時は従来の静的ハンドラのみ
+	sharedLog  *ConversationLog // 全接続で共有する会話ログ
 }
 
-func NewDispatcher(registry *SessionRegistry) *Dispatcher {
+func NewDispatcher(registry *SessionRegistry, sharedLog *ConversationLog) *Dispatcher {
 	return &Dispatcher{
 		handlers: make(map[string]Handler),
 		fallback: &SystemHandler{},
 		registry: registry,
+		sharedLog:  sharedLog,
 	}
 }
 
@@ -35,6 +38,12 @@ func (d *Dispatcher) Register(callsign string, handler Handler) {
 // まず SessionRegistry で動的払い出しCS宛てを優先解決し、次に静的ハンドラ、最後に fallback。
 func (d *Dispatcher) Dispatch(ctx context.Context, result *TranscriptionResult, response string, audioData []byte) error {
 	for _, item := range result.Items {
+		// 全発話を共有会話ログへ記録する（プレイヤー発話・NPC宛・別NPC宛すべて一様に）。
+		// 無線=単一周波数のブロードキャストなので、誰宛のメッセージも全NPCが「聞いている」。
+		if d.sharedLog != nil {
+			d.sharedLog.Append(ConversationEntry{Sender: item.Sender, Receiver: item.Receiver, Message: item.Message})
+		}
+
 		// 動的払い出しCS宛て: WSセッションのチャットへ流す
 		if d.registry != nil {
 			if sess, ok := d.registry.Lookup(item.Receiver); ok {
@@ -120,7 +129,8 @@ func (h *S4CQHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 	// START/CONTINUE/END を付けて 1 チャンクずつ送出する (分割送信)。radio-bridge は同一
 	// stream_id を 1 区間で連続再生するため、先頭チャンクが鳴るまでの体感レイテンシが小さい。
 	chunks := splitAnswerForTTS(answer)
-	return streamTTSChunks(ctx, h.ttsClient, h.sendCh, chunks, "[S4CQ]")
+	buildPrompt := func(text string) string { return fmt.Sprintf(ttsPromptTemplateS4CQ, text) }
+	return streamTTSChunks(ctx, h.ttsClient, h.sendCh, chunks, buildPrompt, "[S4CQ]")
 }
 
 // EchoHandler は受信した音声データをそのまま radio-bridge へ送り返す。

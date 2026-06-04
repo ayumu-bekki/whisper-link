@@ -47,7 +47,11 @@ func main() {
 
 	registry := NewSessionRegistry()
 
-	dispatcher := NewDispatcher(registry)
+	// 全接続で共有する会話ログ（max=0: 無制限）と NPC ペルソナのシナリオ。
+	sharedLog := NewConversationLog(0)
+	scenario := defaultScenario()
+
+	dispatcher := NewDispatcher(registry, sharedLog)
 	dispatcher.Register("S4CE", NewEchoHandler(sendCh))
 	dispatcher.Register("S4CA", NewS4CAHandler(sendCh, ttsClient))
 	dispatcher.Register("S4CQ", NewS4CQHandler(sendCh, ttsClient, processor))
@@ -58,7 +62,7 @@ func main() {
 	if wsAddr == "" {
 		wsAddr = defaultWSListenAddr
 	}
-	wsServer := NewWSServer(callsigns, registry, processor, ttsClient, sendCh)
+	wsServer := NewWSServer(callsigns, registry, processor, ttsClient, sendCh, sharedLog, scenario)
 	go func() {
 		if err := wsServer.Run(ctx, wsAddr); err != nil {
 			log.Printf("WSServer.Run: %v", err)

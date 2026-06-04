@@ -76,17 +76,12 @@ func NewTTSClient(ctx context.Context, apiKey, model string) (*TTSClient, error)
 	return &TTSClient{client: client, model: model}, nil
 }
 
-// GenerateOggOpus はsender/messageからTTS音声を生成してOgg Opusで返す。
+// GenerateOggOpus は sender/message から TTS 音声を生成して Ogg Opus で返す。
 func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string) ([]byte, error) {
-	return t.GenerateOggOpusWithTemplate(ctx, ttsPromptTemplate, sender, message)
+	return t.GenerateOggOpusFromPrompt(ctx, fmt.Sprintf(ttsPromptTemplate, sender, message))
 }
 
-// GenerateOggOpusWithTemplate は指定テンプレートでTTS音声を生成してOgg Opusで返す。
-func (t *TTSClient) GenerateOggOpusWithTemplate(ctx context.Context, tmpl, sender, message string) ([]byte, error) {
-	return t.GenerateOggOpusFromPrompt(ctx, fmt.Sprintf(tmpl, sender, message))
-}
-
-// GenerateOggOpusFromPrompt は組み立て済みプロンプトからTTS音声を生成してOgg Opusで返す。
+// GenerateOggOpusFromPrompt は組み立て済みプロンプトから TTS 音声を生成して Ogg Opus で返す。
 func (t *TTSClient) GenerateOggOpusFromPrompt(ctx context.Context, prompt string) ([]byte, error) {
 	pcm48k, err := t.GeneratePCM48kFromPrompt(ctx, prompt)
 	if err != nil {

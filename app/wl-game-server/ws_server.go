@@ -19,6 +19,8 @@ type WSServer struct {
 	processor *GeminiProcessor
 	ttsClient *TTSClient
 	sendCh    chan<- outgoingAudio
+	sharedLog   *ConversationLog
+	scenario  Scenario
 	ctx       context.Context
 }
 
@@ -28,6 +30,8 @@ func NewWSServer(
 	processor *GeminiProcessor,
 	ttsClient *TTSClient,
 	sendCh chan<- outgoingAudio,
+	sharedLog *ConversationLog,
+	scenario Scenario,
 ) *WSServer {
 	return &WSServer{
 		callsigns: callsigns,
@@ -35,6 +39,8 @@ func NewWSServer(
 		processor: processor,
 		ttsClient: ttsClient,
 		sendCh:    sendCh,
+		sharedLog:   sharedLog,
+		scenario:  scenario,
 	}
 }
 
@@ -45,7 +51,7 @@ func (s *WSServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[WS] upgrade error: %v", err)
 		return
 	}
-	session := newWSSession(conn, s.callsigns, s.registry, s.processor, s.ttsClient, s.sendCh)
+	session := newWSSession(conn, s.callsigns, s.registry, s.processor, s.ttsClient, s.sendCh, s.sharedLog, s.scenario)
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {

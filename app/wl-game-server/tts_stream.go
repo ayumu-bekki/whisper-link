@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 
 	"github.com/google/uuid"
@@ -15,20 +14,17 @@ type ttsChunkResult struct {
 	err error
 }
 
-// generateChunksParallel は分割済みチャンクを並列で TTS 生成・エンコードし、各チャンクの結果
-// チャネルをインデックス順に返す。呼び出し側は results[i] を昇順に待ち合わせることで、全チャンクを
-// 同時生成しつつ順序を保って取り出せる。
-//
-// 各チャンクは同一のペルソナプロンプト (ttsPersona) を含む完全なプロンプトで生成するため、
-// リクエストをまたいで声質が変わりにくい。
-func generateChunksParallel(ctx context.Context, ttsClient *TTSClient, chunks []string) []chan ttsChunkResult {
-	results := make([]chan ttsChunkResult, len(chunks))
+// generateChunksParallel は分割済みプロンプト(組み立て済み文字列)を並列で TTS 生成・エンコードし、
+// 各チャンクの結果チャネルをインデックス順に返す。呼び出し側は results[i] を昇順に待ち合わせることで、
+// 全チャンクを同時生成しつつ順序を保って取り出せる。
+// プロンプトの組み立ては呼び出し元(streamTTSChunks)に委ねる。
+func generateChunksParallel(ctx context.Context, ttsClient *TTSClient, prompts []string) []chan ttsChunkResult {
+	results := make([]chan ttsChunkResult, len(prompts))
 	for i := range results {
 		results[i] = make(chan ttsChunkResult, 1)
 	}
-	for i, chunk := range chunks {
-		go func(idx int, text string) {
-			ttsPrompt := fmt.Sprintf(ttsPromptTemplateS4CQ, text)
+	for i, prompt := range prompts {
+		go func(idx int, ttsPrompt string) {
 			pcm, err := ttsClient.GeneratePCM48kFromPrompt(ctx, ttsPrompt)
 			if err != nil {
 				results[idx] <- ttsChunkResult{err: err}
@@ -36,7 +32,7 @@ func generateChunksParallel(ctx context.Context, ttsClient *TTSClient, chunks []
 			}
 			ogg, err := encodePCMToOggOpus(pcm)
 			results[idx] <- ttsChunkResult{ogg: ogg, err: err}
-		}(i, chunk)
+		}(i, prompt)
 	}
 	return results
 }
@@ -51,18 +47,24 @@ func generateChunksParallel(ctx context.Context, ttsClient *TTSClient, chunks []
 // 1 チャンクの TTS が失敗した場合はログを残してそのチャンクのみスキップし、全体は止めない。
 // 失敗で送出チャンクが 0 件になった場合は何も送らない。ctx がキャンセルされた場合は
 // ctx.Err() を返す。logPrefix はログ出力の接頭辞。
-func streamTTSChunks(ctx context.Context, ttsClient *TTSClient, sendCh chan<- outgoingAudio, chunks []string, logPrefix string) error {
+// buildPrompt はテキストチャンクを TTS 用の完成プロンプトに変換する関数。呼び出し元が
+// ペルソナ・シーン設定をここで差し込むことで、generateChunksParallel は純粋な生成処理に徹する。
+func streamTTSChunks(ctx context.Context, ttsClient *TTSClient, sendCh chan<- outgoingAudio, chunks []string, buildPrompt func(string) string, logPrefix string) error {
 	if len(chunks) == 0 {
 		return nil
 	}
 
-	results := generateChunksParallel(ctx, ttsClient, chunks)
+	prompts := make([]string, len(chunks))
+	for i, chunk := range chunks {
+		prompts[i] = buildPrompt(chunk)
+	}
+	results := generateChunksParallel(ctx, ttsClient, prompts)
 	streamID := uuid.NewString()
 
 	// results[i] を順番に受け取り、完了次第即送信する。
 	// 末尾判定のため、後続チャンクの results をノンブロッキングで先読みして
 	// 成功チャンクが残っているかを確認する。先読み済み結果は cached に保存して二重待ちを防ぐ。
-	n := len(chunks)
+	n := len(prompts)
 	cached := make([]*ttsChunkResult, n)
 
 	getResult := func(i int) (ttsChunkResult, error) {

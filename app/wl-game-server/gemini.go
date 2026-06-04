@@ -121,7 +121,7 @@ const askSystemPromptTemplate = `あなたはアマチュア無線のオペレ�
 - 以下のフォーマットを守ってください（コールサイン部分は上記の読み変換を適用すること）
   - <相手コールサインの読み>。こちら<自分コールサインの読み>。 <回答内容>。 どうぞ。`
 
-// Ask は TranscribeModel + Google Search で一問一答の回答を生成する。
+// Ask は TranscribeModel で一問一答の回答を生成する（S4CQ ハンドラ用）。
 func (p *GeminiProcessor) Ask(ctx context.Context, sender, receiver, question string) (string, error) {
 	systemPrompt := fmt.Sprintf(askSystemPromptTemplate, receiver, sender)
 
@@ -154,13 +154,48 @@ func (p *GeminiProcessor) Ask(ctx context.Context, sender, receiver, question st
 	return text, nil
 }
 
-// NewChat は SystemInstruction 付きの genai チャットセッションを生成する。
-// systemInstruction は将来シナリオごとに差し替える前提で引数で受け取る。
-func (p *GeminiProcessor) NewChat(ctx context.Context, systemInstruction string) (*genai.Chat, error) {
-	cfg := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
+// generateReplyPromptTemplate は GenerateReply で共有ログをラップするプロンプト。
+// %s の順: 自分のコールサイン, 会話ログ(Render結果), 自分のコールサイン
+const generateReplyPromptTemplate = `以下は無線交信のログです。あなたのコールサインは%sです。
+各行は「[発言者] -> [対象] メッセージ内容」の形式です。
+--- これまでの交信 ---
+%s
+--- ここまで ---
+直前のあなた宛のメッセージに対し、%s として次の1交信を返してください。`
+
+// GenerateReply は共有会話ログ全体を文脈に、persona(=応答するNPCのキャラ)で1ターン応答を生成する。
+// genai.Chat を使わず毎回ワンショットの GenerateContent を呼ぶ。会話履歴は呼び出し側が
+// ConversationLog.Render() で整形して history 引数として渡す。
+func (p *GeminiProcessor) GenerateReply(ctx context.Context, persona Persona, selfCallsign, history string) (string, error) {
+	systemPrompt := persona.SystemInstruction(selfCallsign)
+	prompt := fmt.Sprintf(generateReplyPromptTemplate, selfCallsign, history, selfCallsign)
+
+	contents := []*genai.Content{
+		genai.NewContentFromText(prompt, genai.RoleUser),
 	}
-	return p.client.Chats.Create(ctx, p.cfg.ReasoningModel, cfg, nil)
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
+	}
+
+	start := time.Now()
+	resp, err := p.client.Models.GenerateContent(ctx, p.cfg.ReasoningModel, contents, config)
+	log.Printf("[gemini] GenerateReply latency: %v", time.Since(start))
+	if err != nil {
+		return "", fmt.Errorf("GenerateContent (GenerateReply): %w", err)
+	}
+
+	if resp == nil || len(resp.Candidates) == 0 ||
+		resp.Candidates[0].Content == nil ||
+		len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty response from Gemini GenerateReply")
+	}
+
+	text := resp.Candidates[0].Content.Parts[0].Text
+	if text == "" {
+		return "", fmt.Errorf("empty text from Gemini GenerateReply")
+	}
+
+	return text, nil
 }
 
 // parseSchema は JSON バイト列を genai.Schema に変換する。
