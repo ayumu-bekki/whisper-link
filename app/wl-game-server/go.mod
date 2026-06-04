@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/BurntSushi/toml v1.3.2
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hraban/opus v0.0.0-20251117090126-c76ea7e21bf3
 	github.com/kazzmir/opus-go v1.3.0

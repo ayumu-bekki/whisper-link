@@ -24,30 +24,37 @@ const (
 
 const defaultTTSModel = "gemini-3.1-flash-tts-preview"
 
-const ttsPromptTemplate = `# AUDIO PROFILE: 無線オペレーターA
-## "無線でも聞き取りやすく発声する熟練オペレーター"
+const ttsPersona = `# VOICE CHARACTER: 無線オペレーターA (Despina)
+## 基本プロフィール
+- 話者: 日本人女性の熟練アマチュア無線オペレーター
+- 声質: 明るく明瞭な女性の声。FM変調がかかった状態でも一語一語がはっきり聞き取れる
+- 話速: やや速め。ただし子音・語尾を明確に発音し、早口でも聞き取りやすさを保つ
+- 感情: 落ち着いた親しみやすさ。抑揚は最小限に抑え、チャンクをまたいでも同じトーンを維持する
+- 語尾を伸ばさない。文末は平坦〜下がり調子で終わる
 
-## THE SCENE: 無線のテストの相手をしている
+## 発音の特徴
+- コールサイン (英数字の組み合わせ) は一文字ずつ日本語読みで発音する: S4CA → "エス ヨン シー エー"
+- 「どうぞ」は無線用語として明確に発音し、その後は無音にする
+- 助詞・助動詞を略さず丁寧に発音する
+
+## 音響特性 (毎回一定に保つこと)
+- Pitch: 一定 (変動なし)
+- Tempo: 1.1x (やや速め、一定)
+- Breathiness: minimal
+- Vocal fry: none`
+
+const ttsPromptTemplate = ttsPersona + `
+
+## THE SCENE: 無線テストオペレーション
 無線の初心者に対して、相手が話した内容と同じ内容を返答するテストオペレーションをしています。
 
-### DIRECTOR'S NOTES
-Style: このオペレーターは、無線の初心者に対してサポートをしています。
-Pacing: FM変調がかかった状態でも聞き取りやすく的確に話します。
-Accent: 日本国内で無線を運用していたので、コールサインを話す際には日本語の訛りがあります。
-
 #### TRANSCRIPT
-%s こちらS4CA。%s`
+%s。こちらS4CA。%s`
 
-const ttsPromptTemplateS4CQ = `# AUDIO PROFILE: 無線オペレーターA
-## "質問に答える知識豊富な無線オペレータ"
+const ttsPromptTemplateS4CQ = ttsPersona + `
 
-## THE SCENE: 無線のテストの相手をしている
+## THE SCENE: 無線テストオペレーション
 無線の初心者から来た質問に対して返答するテストオペレーションをしています。
-
-### DIRECTOR'S NOTES
-Style: このオペレーターは、無線の初心者に対してサポートをしています。
-Pacing: FM変調がかかった状態でも聞き取りやすく、少し早めに的確に話します。
-Accent: 日本国内で無線を運用していたので、コールサインを話す際には日本語の訛りがあります。
 
 #### TRANSCRIPT
 %s`
@@ -89,8 +96,6 @@ func (t *TTSClient) GenerateOggOpusFromPrompt(ctx context.Context, prompt string
 }
 
 // GeneratePCM48kFromPrompt はプロンプトからTTS音声を生成し、48kHz mono の PCM(int16)で返す。
-// 複数チャンクを並列生成して 1 本の Ogg Opus に結合する場合、Ogg コンテナにする前の
-// PCM 段階で連結する必要があるため、エンコード前のこの関数を公開している。
 func (t *TTSClient) GeneratePCM48kFromPrompt(ctx context.Context, prompt string) ([]int16, error) {
 	start := time.Now()
 	resp, err := t.client.Models.GenerateContent(ctx, t.model,

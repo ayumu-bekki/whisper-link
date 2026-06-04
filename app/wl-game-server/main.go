@@ -43,7 +43,7 @@ func main() {
 		log.Fatalf("NewTTSClient: %v", err)
 	}
 
-	sendCh := make(chan []byte, 16)
+	sendCh := make(chan outgoingAudio, 16)
 
 	registry := NewSessionRegistry()
 

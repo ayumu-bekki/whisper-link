@@ -31,13 +31,16 @@ func main() {
 	rec := newRecorder(cfg.Audio)
 	go rec.run()
 
+	pl := newPlayer()
+	go pl.run()
+
 	lis, err := net.Listen("tcp", cfg.Server.ListenAddr)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterTransceiverServiceServer(grpcServer, newTransceiverServer(cfg.Audio, rec))
+	pb.RegisterTransceiverServiceServer(grpcServer, newTransceiverServer(cfg.Audio, rec, pl))
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

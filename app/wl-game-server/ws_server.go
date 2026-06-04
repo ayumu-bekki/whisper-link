@@ -18,7 +18,7 @@ type WSServer struct {
 	registry  *SessionRegistry
 	processor *GeminiProcessor
 	ttsClient *TTSClient
-	sendCh    chan<- []byte
+	sendCh    chan<- outgoingAudio
 	ctx       context.Context
 }
 
@@ -27,7 +27,7 @@ func NewWSServer(
 	registry *SessionRegistry,
 	processor *GeminiProcessor,
 	ttsClient *TTSClient,
-	sendCh chan<- []byte,
+	sendCh chan<- outgoingAudio,
 ) *WSServer {
 	return &WSServer{
 		callsigns: callsigns,

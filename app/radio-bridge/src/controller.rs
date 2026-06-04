@@ -1,7 +1,7 @@
 use crate::audio::player::AudioPlayer;
 use crate::audio::recorder::AudioRecorder;
 use crate::config::Config;
-use crate::queue::AudioQueue;
+use crate::queue::{AudioEntry, AudioQueue, StreamStatus};
 use rppal::gpio::{Gpio, OutputPin};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -84,7 +84,7 @@ impl Controller {
         loop {
             let has_queue = {
                 let q = self.queue.lock().unwrap();
-                !q.is_empty()
+                q.has_stream()
             };
 
             if has_queue {
@@ -121,38 +121,95 @@ impl Controller {
     }
 
     async fn handle_playing(&self, player: &AudioPlayer) -> State {
-        let entry = {
-            let mut q = self.queue.lock().unwrap();
-            q.pop()
-        };
+        // 連続再生中に現ストリームのチャンクが尽きたとき、後続をこの時間だけ待つ。
+        // 超えたらストリームをクローズして PTT を切る。
+        const STREAM_TIMEOUT_MS: u64 = 2000;
+        const POLL_INTERVAL_MS: u64 = 100;
+        // 将来 config.toml の [timing] に stream_timeout_ms として逃がせる。
 
-        match entry {
-            None => {
-                warn!("PLAYING state but queue is empty, going to PTT_OFF");
-                State::PttOff
-            }
-            Some(entry) => {
-                info!(
-                    duration_secs = entry.duration.as_secs_f32(),
-                    "playing audio"
-                );
-                let data = entry.ogg_opus_data;
-                let player_device = player.device.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let p = AudioPlayer::new(&player_device);
-                    p.play_blocking(&data)
-                })
-                .await;
-
-                match result {
-                    Ok(Ok(())) => info!("playback complete"),
-                    Ok(Err(e)) => error!("playback error: {e}"),
-                    Err(e) => error!("spawn_blocking error: {e}"),
+        // 現在再生中のストリーム (order 先頭)。ONESHOT も 1 チャンクのストリームとして
+        // ここに乗る。別 stream_id のチャンクは別キーに溜まるだけで、このストリームの
+        // 再生には一切割り込まない。
+        let stream_id = {
+            let q = self.queue.lock().unwrap();
+            match q.current_stream() {
+                Some(id) => id.to_string(),
+                None => {
+                    warn!("PLAYING state but no stream queued, going to PTT_OFF");
+                    return State::PttOff;
                 }
-
-                info!("state: PLAYING -> PTT_OFF");
-                State::PttOff
             }
+        };
+        info!(%stream_id, "stream playback started");
+
+        loop {
+            // 現ストリームの次チャンクを取り出して再生する。
+            let entry = {
+                let mut q = self.queue.lock().unwrap();
+                q.pop_current()
+            };
+
+            if let Some(entry) = entry {
+                let is_terminal = matches!(
+                    entry.status,
+                    StreamStatus::End | StreamStatus::Oneshot
+                );
+                self.play_entry(player, entry).await;
+
+                // END / ONESHOT を再生し終えたらストリーム完了。
+                if is_terminal {
+                    info!(%stream_id, "state: PLAYING -> PTT_OFF (stream complete)");
+                    self.queue.lock().unwrap().finish_current();
+                    return State::PttOff;
+                }
+                continue;
+            }
+
+            // 現ストリームのチャンクが一時的に尽きた。STREAM_TIMEOUT_MS だけ後続を待つ。
+            // 別 stream_id がいくら溜まっても current は変わらないので待ち続けてよい。
+            let mut waited = 0;
+            let mut resumed = false;
+            while waited < STREAM_TIMEOUT_MS {
+                sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+                waited += POLL_INTERVAL_MS;
+                let has_chunk = {
+                    let q = self.queue.lock().unwrap();
+                    q.current_has_chunk()
+                };
+                if has_chunk {
+                    resumed = true;
+                    break;
+                }
+            }
+
+            if resumed {
+                continue;
+            }
+
+            info!(%stream_id, "state: PLAYING -> PTT_OFF (stream timeout)");
+            self.queue.lock().unwrap().finish_current();
+            return State::PttOff;
+        }
+    }
+
+    /// 1 エントリを spawn_blocking 経由で再生し、完了まで待つ。
+    async fn play_entry(&self, player: &AudioPlayer, entry: AudioEntry) {
+        info!(
+            duration_secs = entry.duration.as_secs_f32(),
+            "playing audio"
+        );
+        let data = entry.ogg_opus_data;
+        let player_device = player.device.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let p = AudioPlayer::new(&player_device);
+            p.play_blocking(&data)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => info!("playback complete"),
+            Ok(Err(e)) => error!("playback error: {e}"),
+            Err(e) => error!("spawn_blocking error: {e}"),
         }
     }
 
@@ -176,7 +233,7 @@ impl Controller {
 
         let has_queue = {
             let q = self.queue.lock().unwrap();
-            !q.is_empty()
+            q.has_stream()
         };
 
         if has_queue {
@@ -197,7 +254,7 @@ impl Controller {
                 info!("mic recording finished");
                 let has_queue = {
                     let q = self.queue.lock().unwrap();
-                    !q.is_empty()
+                    q.has_stream()
                 };
                 if has_queue {
                     info!("state: LISTENING -> PTT_ON");

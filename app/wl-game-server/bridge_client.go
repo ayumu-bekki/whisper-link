@@ -16,10 +16,10 @@ type BridgeClient struct {
 	cfg        RadioBridgeConfig
 	processor  *GeminiProcessor
 	dispatcher *Dispatcher
-	sendCh     chan []byte
+	sendCh     chan outgoingAudio
 }
 
-func NewBridgeClient(cfg RadioBridgeConfig, processor *GeminiProcessor, dispatcher *Dispatcher, sendCh chan []byte) *BridgeClient {
+func NewBridgeClient(cfg RadioBridgeConfig, processor *GeminiProcessor, dispatcher *Dispatcher, sendCh chan outgoingAudio) *BridgeClient {
 	return &BridgeClient{
 		cfg:        cfg,
 		processor:  processor,
@@ -82,12 +82,17 @@ func (c *BridgeClient) connect(ctx context.Context) error {
 	go func() {
 		for {
 			select {
-			case data := <-c.sendCh:
-				if err := stream.Send(&pb.AudioChunk{OggOpusData: data}); err != nil {
+			case out := <-c.sendCh:
+				if err := stream.Send(&pb.AudioChunk{
+					OggOpusData: out.Data,
+					Status:      out.Status,
+					StreamId:    out.StreamID,
+				}); err != nil {
 					log.Printf("[bridge] stream.Send error: %v", err)
 					return
 				}
-				log.Printf("[bridge] sent audio: %d bytes", len(data))
+				log.Printf("[bridge] sent audio: %d bytes (status=%s stream_id=%s)",
+					len(out.Data), out.Status, out.StreamID)
 			case <-sendCtx.Done():
 				return
 			}

@@ -1,6 +1,6 @@
 use crate::audio::recorder::AudioRecorder;
-use crate::queue::{AudioQueue, QueueError};
-use std::sync::{Arc, Mutex};
+use crate::queue::{AudioQueue, QueueError, StreamStatus};
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_stream::wrappers::ReceiverStream;
@@ -13,6 +13,20 @@ pub mod proto {
 
 pub use proto::transceiver_service_server::{TransceiverService, TransceiverServiceServer};
 pub use proto::AudioChunk;
+
+/// proto の status (i32) を queue 層の StreamStatus に変換する。
+/// UNKNOWN(0) / 未知値は無効として None を返し、呼び出し側で破棄する
+/// (送信側は ONESHOT/START/CONTINUE/END を明示する必要がある)。
+fn map_status(raw: i32) -> Option<StreamStatus> {
+    match proto::StreamStatus::try_from(raw) {
+        Ok(proto::StreamStatus::Oneshot) => Some(StreamStatus::Oneshot),
+        Ok(proto::StreamStatus::Start) => Some(StreamStatus::Start),
+        Ok(proto::StreamStatus::Continue) => Some(StreamStatus::Continue),
+        Ok(proto::StreamStatus::End) => Some(StreamStatus::End),
+        // UNKNOWN / 未知値は無効。
+        _ => None,
+    }
+}
 
 pub struct TransceiverHandler {
     queue: Arc<Mutex<AudioQueue>>,
@@ -45,6 +59,10 @@ impl TransceiverService for TransceiverHandler {
         // サーバー→クライアント送信チャンネル
         let (tx, rx) = mpsc::channel::<Result<AudioChunk, Status>>(32);
 
+        // ONESHOT チャンクに振る接続スコープの連番。
+        // uuid 依存を避けるため peer + カウンタで内部 ID を生成する。
+        let oneshot_counter = Arc::new(AtomicU64::new(0));
+
         // レコーダーのブロードキャストを購読
         let mut recorder_rx = self.recorder.subscribe();
 
@@ -62,7 +80,12 @@ impl TransceiverService for TransceiverHandler {
                         match result {
                             Ok(ogg_data) => {
                                 if tx_recorder
-                                    .send(Ok(AudioChunk { ogg_opus_data: ogg_data }))
+                                    .send(Ok(AudioChunk {
+                                        ogg_opus_data: ogg_data,
+                                        // マイク受信音声は単発再生扱い。
+                                        status: proto::StreamStatus::Oneshot as i32,
+                                        stream_id: String::new(),
+                                    }))
                                     .await
                                     .is_err()
                                 {
@@ -89,6 +112,7 @@ impl TransceiverService for TransceiverHandler {
 
         // クライアント→サーバー: 受信した音声をキューに積むタスク
         let cancel_send = cancel.clone();
+        let peer_send = peer.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -96,35 +120,69 @@ impl TransceiverService for TransceiverHandler {
                         match msg {
                             Ok(Some(chunk)) => {
                                 let bytes = chunk.ogg_opus_data.len();
+                                let status = match map_status(chunk.status) {
+                                    Some(s) => s,
+                                    None => {
+                                        // UNKNOWN / 未知値は無効タイプとして破棄。
+                                        warn!(
+                                            peer = %peer_send,
+                                            raw_status = chunk.status,
+                                            "audio discarded: invalid status (UNKNOWN)"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                // ONESHOT は stream_id を内部生成する (空文字列をキーにしない)。
+                                // stream 系 (START/CONTINUE/END) で stream_id が空なら破棄する。
+                                let stream_id = match status {
+                                    StreamStatus::Oneshot => {
+                                        let n = oneshot_counter.fetch_add(1, Ordering::Relaxed);
+                                        format!("__oneshot_{peer_send}_{n}")
+                                    }
+                                    _ => {
+                                        if chunk.stream_id.is_empty() {
+                                            warn!(
+                                                peer = %peer_send,
+                                                ?status,
+                                                "audio discarded: stream_id is empty for stream chunk"
+                                            );
+                                            continue;
+                                        }
+                                        chunk.stream_id
+                                    }
+                                };
                                 let result = {
                                     let mut q = queue.lock().unwrap();
-                                    q.push(chunk.ogg_opus_data)
+                                    q.push(chunk.ogg_opus_data, status, stream_id)
                                 };
                                 match result {
                                     Ok(pos) => {
-                                        info!(peer = %peer, bytes, position = pos, "audio queued");
+                                        info!(peer = %peer_send, bytes, position = pos, ?status, "audio queued");
                                     }
                                     Err(QueueError::TooLong(d)) => {
                                         warn!(
-                                            peer = %peer,
+                                            peer = %peer_send,
                                             duration_secs = d.as_secs_f32(),
                                             "audio rejected: too long"
                                         );
                                     }
                                     Err(QueueError::QueueFull(max)) => {
-                                        warn!(peer = %peer, max, "audio rejected: queue full");
+                                        warn!(peer = %peer_send, max, "audio rejected: queue full");
                                     }
                                     Err(QueueError::ParseError(msg)) => {
-                                        warn!(peer = %peer, %msg, "audio rejected: parse error");
+                                        warn!(peer = %peer_send, %msg, "audio rejected: parse error");
+                                    }
+                                    Err(QueueError::StreamClosed(id)) => {
+                                        warn!(peer = %peer_send, stream_id = %id, "audio discarded: stream closed");
                                     }
                                 }
                             }
                             Ok(None) => {
-                                info!(peer = %peer, "client closed send stream");
+                                info!(peer = %peer_send, "client closed send stream");
                                 break;
                             }
                             Err(e) => {
-                                error!(peer = %peer, "inbound stream error: {e}");
+                                error!(peer = %peer_send, "inbound stream error: {e}");
                                 break;
                             }
                         }

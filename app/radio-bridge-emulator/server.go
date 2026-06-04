@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
+	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,10 +15,11 @@ type transceiverServer struct {
 	pb.UnimplementedTransceiverServiceServer
 	cfg      AudioConfig
 	recorder *recorder
+	player   *player
 }
 
-func newTransceiverServer(cfg AudioConfig, rec *recorder) *transceiverServer {
-	return &transceiverServer{cfg: cfg, recorder: rec}
+func newTransceiverServer(cfg AudioConfig, rec *recorder, pl *player) *transceiverServer {
+	return &transceiverServer{cfg: cfg, recorder: rec, player: pl}
 }
 
 // Connect は双方向ストリーミングRPC。
@@ -25,6 +28,10 @@ func newTransceiverServer(cfg AudioConfig, rec *recorder) *transceiverServer {
 func (s *transceiverServer) Connect(stream pb.TransceiverService_ConnectServer) error {
 	ctx := stream.Context()
 	log.Println("[grpc] client connected")
+
+	// ONESHOT チャンクに振る接続スコープの連番。
+	// peer は取れないため接続識別は不要; カウンタだけで内部 ID の一意性を確保する。
+	var oneshotCounter atomic.Uint64
 
 	// マイク録音 → クライアント送信
 	sub := s.recorder.subscribe()
@@ -38,7 +45,11 @@ func (s *transceiverServer) Connect(stream pb.TransceiverService_ConnectServer) 
 					return
 				}
 				log.Printf("[grpc] sending audio to client: %d bytes", len(data))
-				if err := stream.Send(&pb.AudioChunk{OggOpusData: data}); err != nil {
+				// マイク受信音声は単発再生扱い。
+				if err := stream.Send(&pb.AudioChunk{
+					OggOpusData: data,
+					Status:      pb.StreamStatus_ONESHOT,
+				}); err != nil {
 					log.Printf("[grpc] send error: %v", err)
 					return
 				}
@@ -63,11 +74,28 @@ func (s *transceiverServer) Connect(stream pb.TransceiverService_ConnectServer) 
 			return err
 		}
 
-		log.Printf("[grpc] received audio from client: %d bytes, playing...", len(chunk.OggOpusData))
-		go func(data []byte) {
-			if err := playOggOpus(data); err != nil {
-				log.Printf("[play] error: %v", err)
+		log.Printf("[grpc] received audio from client: %d bytes (status=%s stream_id=%s)",
+			len(chunk.OggOpusData), chunk.Status, chunk.StreamId)
+
+		// ONESHOT は stream_id を内部生成する (空文字列をキーにしない)。
+		// stream 系 (START/CONTINUE/END) で stream_id が空なら破棄する。
+		var streamID string
+		switch chunk.Status {
+		case pb.StreamStatus_ONESHOT:
+			n := oneshotCounter.Add(1)
+			streamID = fmt.Sprintf("__oneshot_%d", n)
+		case pb.StreamStatus_START, pb.StreamStatus_CONTINUE, pb.StreamStatus_END:
+			if chunk.StreamId == "" {
+				log.Printf("[grpc] audio discarded: stream_id is empty for stream chunk (status=%s)", chunk.Status)
+				continue
 			}
-		}(chunk.OggOpusData)
+			streamID = chunk.StreamId
+		default:
+			// UNKNOWN(0) / 未知値は player.push 内でも破棄されるが、ここで先に弾く。
+			log.Printf("[grpc] audio discarded: invalid status (raw=%d)", int32(chunk.Status))
+			continue
+		}
+
+		s.player.push(chunk.OggOpusData, chunk.Status, streamID)
 	}
 }

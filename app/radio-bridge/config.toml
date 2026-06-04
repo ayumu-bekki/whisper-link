@@ -8,7 +8,7 @@ ptt_pin = 26
 output_device       = "plughw:0,0"
 input_device        = "hw:0,0"
 input_threshold_rms     = 1000
-input_silence_ms        = 1000
+input_silence_ms        = 2000
 input_max_recording_secs = 30
 
 [timing]

@@ -70,11 +70,11 @@ func (h *SystemHandler) Handle(ctx context.Context, item TranscriptionItem, resp
 
 // S4CAHandler はS4CA宛メッセージをGemini TTSで音声化してradio-bridgeへ送り返す。
 type S4CAHandler struct {
-	sendCh    chan<- []byte
+	sendCh    chan<- outgoingAudio
 	ttsClient *TTSClient
 }
 
-func NewS4CAHandler(sendCh chan<- []byte, ttsClient *TTSClient) *S4CAHandler {
+func NewS4CAHandler(sendCh chan<- outgoingAudio, ttsClient *TTSClient) *S4CAHandler {
 	return &S4CAHandler{sendCh: sendCh, ttsClient: ttsClient}
 }
 
@@ -87,7 +87,7 @@ func (h *S4CAHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 	}
 	log.Printf("[S4CA] TTS generated %d bytes, sending", len(oggData))
 	select {
-	case h.sendCh <- oggData:
+	case h.sendCh <- oneshot(oggData):
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -96,12 +96,12 @@ func (h *S4CAHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 
 // S4CQHandler はS4CQ宛メッセージをGoogle検索付きGeminiで回答し、TTSで音声化して返す。
 type S4CQHandler struct {
-	sendCh    chan<- []byte
+	sendCh    chan<- outgoingAudio
 	ttsClient *TTSClient
 	processor *GeminiProcessor
 }
 
-func NewS4CQHandler(sendCh chan<- []byte, ttsClient *TTSClient, processor *GeminiProcessor) *S4CQHandler {
+func NewS4CQHandler(sendCh chan<- outgoingAudio, ttsClient *TTSClient, processor *GeminiProcessor) *S4CQHandler {
 	return &S4CQHandler{sendCh: sendCh, ttsClient: ttsClient, processor: processor}
 }
 
@@ -116,19 +116,19 @@ func (h *S4CQHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 	log.Printf("[S4CQ] answer: %s", answer)
 
 	// 回答を冒頭呼び出し + 本文(句点)のチャンクに分割し、全チャンクを並列に TTS 生成する。
-	// 各チャンクの生成を同時に走らせることで全体の生成時間を短縮しつつ、結果の PCM は
-	// チャンク順に連結して単一の Ogg Opus にまとめ、1 パケットとして送出する
-	// (radio-bridge に他プロセスの音声が割り込むのを防ぐため。詳細は streamTTSChunks)。
+	// 各チャンクの生成を同時に走らせて全体の生成時間を短縮しつつ、できた順に同一 stream_id +
+	// START/CONTINUE/END を付けて 1 チャンクずつ送出する (分割送信)。radio-bridge は同一
+	// stream_id を 1 区間で連続再生するため、先頭チャンクが鳴るまでの体感レイテンシが小さい。
 	chunks := splitAnswerForTTS(answer)
 	return streamTTSChunks(ctx, h.ttsClient, h.sendCh, chunks, "[S4CQ]")
 }
 
 // EchoHandler は受信した音声データをそのまま radio-bridge へ送り返す。
 type EchoHandler struct {
-	sendCh chan<- []byte
+	sendCh chan<- outgoingAudio
 }
 
-func NewEchoHandler(sendCh chan<- []byte) *EchoHandler {
+func NewEchoHandler(sendCh chan<- outgoingAudio) *EchoHandler {
 	return &EchoHandler{sendCh: sendCh}
 }
 
@@ -136,7 +136,7 @@ func (h *EchoHandler) Handle(ctx context.Context, item TranscriptionItem, respon
 	log.Printf("[ECHO] sender=%s receiver=%s message=%q — echoing %d bytes",
 		item.Sender, item.Receiver, item.Message, len(audioData))
 	select {
-	case h.sendCh <- audioData:
+	case h.sendCh <- oneshot(audioData):
 	case <-ctx.Done():
 		return ctx.Err()
 	}

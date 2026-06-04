@@ -62,7 +62,7 @@ type wsSession struct {
 	registry      *SessionRegistry
 	processor     *GeminiProcessor
 	ttsClient     *TTSClient
-	sendCh        chan<- []byte
+	sendCh        chan<- outgoingAudio
 
 	callsign      string   // 自分CS
 	peerCallsigns []string // 相手CS 0..n（将来複数前提）
@@ -77,7 +77,7 @@ func newWSSession(
 	registry *SessionRegistry,
 	processor *GeminiProcessor,
 	ttsClient *TTSClient,
-	sendCh chan<- []byte,
+	sendCh chan<- outgoingAudio,
 ) *wsSession {
 	return &wsSession{
 		conn:      conn,
@@ -184,8 +184,9 @@ func (s *wsSession) handleLogin(ctx context.Context) {
 // Dispatcher から呼ばれる（bridge goroutine）ため chatMu で直列化する。
 // TTS は S4CQ と同様にチャンク並列生成し、PCM 連結して単一 Ogg Opus を 1 回送出する。
 func (s *wsSession) HandleMessage(ctx context.Context, item TranscriptionItem) error {
-	// sender/receiver を毎回明示して LLM がコールサインを自作するのを防ぐ
-	userMessage := fmt.Sprintf(chatUserMessageTemplate, item.Sender, s.callsign, item.Message)
+	// sender/receiver を毎回明示して LLM がコールサインを自作するのを防ぐ。
+	// item.Receiver が自分CS（相手CS宛メッセージもこのセッションで処理するため s.callsign とは限らない）
+	userMessage := fmt.Sprintf(chatUserMessageTemplate, item.Sender, item.Receiver, item.Message)
 
 	s.chatMu.Lock()
 	resp, err := s.chat.SendMessage(ctx, genai.Part{Text: userMessage})
@@ -205,9 +206,9 @@ func (s *wsSession) HandleMessage(ctx context.Context, item TranscriptionItem) e
 	}
 	log.Printf("[WS chat] sender=%s answer: %s", item.Sender, answer)
 
-	// 全チャンクを並列に TTS 生成して全体の生成時間を短縮しつつ、結果の PCM はチャンク順に
-	// 連結して単一の Ogg Opus にまとめ、1 パケットとして送出する（radio-bridge に他プロセスの
-	// 音声が割り込むのを防ぐため。詳細は streamTTSChunks）。
+	// 全チャンクを並列に TTS 生成して全体の生成時間を短縮しつつ、できた順に同一 stream_id +
+	// START/CONTINUE/END を付けて 1 チャンクずつ送出する（分割送信）。radio-bridge は同一
+	// stream_id を 1 区間で連続再生するため、先頭チャンクが鳴るまでの体感レイテンシが小さい。
 	chunks := splitAnswerForTTS(answer)
 	return streamTTSChunks(ctx, s.ttsClient, s.sendCh, chunks, "[WS chat]")
 }

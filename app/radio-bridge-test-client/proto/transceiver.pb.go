@@ -21,9 +21,70 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// AudioChunk の再生まとまりを示すステータス。
+// START → CONTINUE... → END を同一 stream_id で送ると 1 回の PTT 区間で連続再生される。
+type StreamStatus int32
+
+const (
+	StreamStatus_UNKNOWN  StreamStatus = 0 // 予約。旧クライアントの未設定値。挙動は ONESHOT 互換 (単発完結再生)
+	StreamStatus_ONESHOT  StreamStatus = 1 // 単発完結再生。1 チャンク = 1 再生サイクル。stream_id 不要
+	StreamStatus_START    StreamStatus = 2 // 連続再生ストリームの開始チャンク
+	StreamStatus_CONTINUE StreamStatus = 3 // 連続再生ストリームの途中チャンク
+	StreamStatus_END      StreamStatus = 4 // 連続再生ストリームの終了チャンク
+)
+
+// Enum value maps for StreamStatus.
+var (
+	StreamStatus_name = map[int32]string{
+		0: "UNKNOWN",
+		1: "ONESHOT",
+		2: "START",
+		3: "CONTINUE",
+		4: "END",
+	}
+	StreamStatus_value = map[string]int32{
+		"UNKNOWN":  0,
+		"ONESHOT":  1,
+		"START":    2,
+		"CONTINUE": 3,
+		"END":      4,
+	}
+)
+
+func (x StreamStatus) Enum() *StreamStatus {
+	p := new(StreamStatus)
+	*p = x
+	return p
+}
+
+func (x StreamStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StreamStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_transceiver_proto_enumTypes[0].Descriptor()
+}
+
+func (StreamStatus) Type() protoreflect.EnumType {
+	return &file_transceiver_proto_enumTypes[0]
+}
+
+func (x StreamStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StreamStatus.Descriptor instead.
+func (StreamStatus) EnumDescriptor() ([]byte, []int) {
+	return file_transceiver_proto_rawDescGZIP(), []int{0}
+}
+
 type AudioChunk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OggOpusData   []byte                 `protobuf:"bytes,1,opt,name=ogg_opus_data,json=oggOpusData,proto3" json:"ogg_opus_data,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	OggOpusData []byte                 `protobuf:"bytes,1,opt,name=ogg_opus_data,json=oggOpusData,proto3" json:"ogg_opus_data,omitempty"`
+	// 再生制御ステータス。未設定 (旧クライアント) は UNKNOWN(0) になり ONESHOT 互換で扱う。
+	Status StreamStatus `protobuf:"varint,2,opt,name=status,proto3,enum=transceiver.StreamStatus" json:"status,omitempty"`
+	// 連続再生を束ねる識別子。ONESHOT/UNKNOWN のときは無視される (空文字でよい)。
+	StreamId      string `protobuf:"bytes,3,opt,name=stream_id,json=streamId,proto3" json:"stream_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -65,14 +126,36 @@ func (x *AudioChunk) GetOggOpusData() []byte {
 	return nil
 }
 
+func (x *AudioChunk) GetStatus() StreamStatus {
+	if x != nil {
+		return x.Status
+	}
+	return StreamStatus_UNKNOWN
+}
+
+func (x *AudioChunk) GetStreamId() string {
+	if x != nil {
+		return x.StreamId
+	}
+	return ""
+}
+
 var File_transceiver_proto protoreflect.FileDescriptor
 
 const file_transceiver_proto_rawDesc = "" +
 	"\n" +
-	"\x11transceiver.proto\x12\vtransceiver\"0\n" +
+	"\x11transceiver.proto\x12\vtransceiver\"\x80\x01\n" +
 	"\n" +
 	"AudioChunk\x12\"\n" +
-	"\rogg_opus_data\x18\x01 \x01(\fR\voggOpusData2U\n" +
+	"\rogg_opus_data\x18\x01 \x01(\fR\voggOpusData\x121\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x19.transceiver.StreamStatusR\x06status\x12\x1b\n" +
+	"\tstream_id\x18\x03 \x01(\tR\bstreamId*J\n" +
+	"\fStreamStatus\x12\v\n" +
+	"\aUNKNOWN\x10\x00\x12\v\n" +
+	"\aONESHOT\x10\x01\x12\t\n" +
+	"\x05START\x10\x02\x12\f\n" +
+	"\bCONTINUE\x10\x03\x12\a\n" +
+	"\x03END\x10\x042U\n" +
 	"\x12TransceiverService\x12?\n" +
 	"\aConnect\x12\x17.transceiver.AudioChunk\x1a\x17.transceiver.AudioChunk(\x010\x01B Z\x1eradio-bridge-test-client/protob\x06proto3"
 
@@ -88,18 +171,21 @@ func file_transceiver_proto_rawDescGZIP() []byte {
 	return file_transceiver_proto_rawDescData
 }
 
+var file_transceiver_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_transceiver_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_transceiver_proto_goTypes = []any{
-	(*AudioChunk)(nil), // 0: transceiver.AudioChunk
+	(StreamStatus)(0),  // 0: transceiver.StreamStatus
+	(*AudioChunk)(nil), // 1: transceiver.AudioChunk
 }
 var file_transceiver_proto_depIdxs = []int32{
-	0, // 0: transceiver.TransceiverService.Connect:input_type -> transceiver.AudioChunk
-	0, // 1: transceiver.TransceiverService.Connect:output_type -> transceiver.AudioChunk
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: transceiver.AudioChunk.status:type_name -> transceiver.StreamStatus
+	1, // 1: transceiver.TransceiverService.Connect:input_type -> transceiver.AudioChunk
+	1, // 2: transceiver.TransceiverService.Connect:output_type -> transceiver.AudioChunk
+	2, // [2:3] is the sub-list for method output_type
+	1, // [1:2] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_transceiver_proto_init() }
@@ -112,13 +198,14 @@ func file_transceiver_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_transceiver_proto_rawDesc), len(file_transceiver_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_transceiver_proto_goTypes,
 		DependencyIndexes: file_transceiver_proto_depIdxs,
+		EnumInfos:         file_transceiver_proto_enumTypes,
 		MessageInfos:      file_transceiver_proto_msgTypes,
 	}.Build()
 	File_transceiver_proto = out.File

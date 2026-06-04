@@ -10,4 +10,18 @@ service TransceiverService {
 
 message AudioChunk {
   bytes ogg_opus_data = 1;
+  // 再生制御ステータス。未設定 (旧クライアント) は UNKNOWN(0) になり ONESHOT 互換で扱う。
+  StreamStatus status = 2;
+  // 連続再生を束ねる識別子。ONESHOT/UNKNOWN のときは無視される (空文字でよい)。
+  string stream_id = 3;
+}
+
+// AudioChunk の再生まとまりを示すステータス。
+// START → CONTINUE... → END を同一 stream_id で送ると 1 回の PTT 区間で連続再生される。
+enum StreamStatus {
+  UNKNOWN  = 0;  // 予約。旧クライアントの未設定値。挙動は ONESHOT 互換 (単発完結再生)
+  ONESHOT  = 1;  // 単発完結再生。1 チャンク = 1 再生サイクル。stream_id 不要
+  START    = 2;  // 連続再生ストリームの開始チャンク
+  CONTINUE = 3;  // 連続再生ストリームの途中チャンク
+  END      = 4;  // 連続再生ストリームの終了チャンク
 }
