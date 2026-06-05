@@ -9,11 +9,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
-const SAMPLE_RATE: u32 = 48000;
+const ALSA_SAMPLE_RATE: u32 = 48000; // ALSAデバイスは48kHz固定
+const OPUS_SAMPLE_RATE: u32 = 24000; // Opusエンコードは24kHz
+const OPUS_BITRATE: i32 = 16000;     // 16kbps
 const CAPTURE_CHANNELS: u32 = 2; // ALSAキャプチャはステレオ
 const ENCODE_CHANNELS: u32 = 1;  // Opusエンコードはモノラル
-// 20ms フレーム @ 48kHz
-const FRAME_SIZE: usize = 960;
+// 20ms フレーム @ 24kHz
+const FRAME_SIZE: usize = 480;
 
 /// マイク入力レベルを監視し、音声検知時に録音→Ogg Opusエンコード→ブロードキャストする。
 /// `is_recording` フラグで現在録音中かどうかをコントローラから参照できる。
@@ -29,6 +31,7 @@ impl AudioRecorder {
         device: &str,
         threshold_rms: u16,
         silence_duration: Duration,
+        min_recording_duration: Duration,
         max_recording_duration: Duration,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (tx, _) = broadcast::channel::<Vec<u8>>(32);
@@ -46,6 +49,7 @@ impl AudioRecorder {
                 &device,
                 threshold_rms,
                 silence_duration,
+                min_recording_duration,
                 max_recording_duration,
                 tx_clone,
                 &is_recording_clone,
@@ -84,6 +88,7 @@ fn record_loop(
     device: &str,
     threshold_rms: u16,
     silence_duration: Duration,
+    min_recording_duration: Duration,
     max_recording_duration: Duration,
     tx: broadcast::Sender<Vec<u8>>,
     is_recording: &AtomicBool,
@@ -95,10 +100,11 @@ fn record_loop(
     {
         let hwp = HwParams::any(&pcm)?;
         hwp.set_channels(CAPTURE_CHANNELS)?;
-        hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest)?;
+        hwp.set_rate(ALSA_SAMPLE_RATE, ValueOr::Nearest)?;
         hwp.set_format(Format::s16())?;
         hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_period_size(FRAME_SIZE as i64, ValueOr::Nearest)?;
+        // ALSA は 48kHz なのでフレームサイズも 48kHz 基準 (FRAME_SIZE の 2倍)
+        hwp.set_period_size((FRAME_SIZE * 2) as i64, ValueOr::Nearest)?;
         pcm.hw_params(&hwp)?;
     }
 
@@ -106,8 +112,8 @@ fn record_loop(
     info!("audio recorder started, monitoring input level");
 
     let io = pcm.io_i16()?;
-    // ステレオインターリーブ (L, R, L, R, ...) で受け取る
-    let mut pcm_buf = vec![0i16; FRAME_SIZE * CAPTURE_CHANNELS as usize];
+    // ステレオインターリーブ (L, R, L, R, ...) で受け取る。ALSAは48kHzなので2倍のフレームサイズ
+    let mut pcm_buf = vec![0i16; FRAME_SIZE * 2 * CAPTURE_CHANNELS as usize];
 
     // 録音バッファ (PCMサンプル列)
     let mut record_buf: Vec<i16> = Vec::new();
@@ -150,9 +156,14 @@ fn record_loop(
 
         // ステレオ→モノラル: L/R を平均してダウンミックス
         let stereo = &pcm_buf[..frames * CAPTURE_CHANNELS as usize];
-        let samples: Vec<i16> = stereo
+        let mono_48k: Vec<i16> = stereo
             .chunks(CAPTURE_CHANNELS as usize)
             .map(|ch| ((ch[0] as i32 + ch[1] as i32) / 2) as i16)
+            .collect();
+        // 48kHz → 24kHz ダウンサンプル (2サンプル平均)
+        let samples: Vec<i16> = mono_48k
+            .chunks(2)
+            .map(|c| if c.len() == 2 { ((c[0] as i32 + c[1] as i32) / 2) as i16 } else { c[0] })
             .collect();
         let samples = samples.as_slice();
         let rms = compute_rms(samples);
@@ -181,8 +192,13 @@ fn record_loop(
                         max_secs = max_recording_duration.as_secs(),
                         "max recording duration reached, flushing"
                     );
-                    // 最大時間到達時はまだ発話中の可能性が高いのでトリミングしない
-                    flush_recording(&record_buf, &tx);
+                    let duration_ms = record_buf.len() as u64 * 1000 / OPUS_SAMPLE_RATE as u64;
+                    if Duration::from_millis(duration_ms) >= min_recording_duration {
+                        // 最大時間到達時はまだ発話中の可能性が高いのでトリミングしない
+                        flush_recording(&record_buf, &tx);
+                    } else {
+                        debug!("recording too short ({duration_ms}ms < {}ms), discarding", min_recording_duration.as_millis());
+                    }
                     recording = false;
                     is_recording.store(false, Ordering::Relaxed);
                     record_buf.clear();
@@ -201,13 +217,18 @@ fn record_loop(
             if silence_elapsed {
                 // 末尾の無音フレームをトリミング（20ms余白を1フレーム残す）
                 let trimmed = trim_trailing_silence(&record_buf, &frame_rms, threshold_rms);
+                let duration_ms = trimmed.len() as u64 * 1000 / OPUS_SAMPLE_RATE as u64;
                 info!(
                     samples = trimmed.len(),
                     trimmed_from = record_buf.len(),
-                    duration_ms = trimmed.len() as u64 * 1000 / SAMPLE_RATE as u64,
+                    duration_ms,
                     "recording finished"
                 );
-                flush_recording(trimmed, &tx);
+                if Duration::from_millis(duration_ms) >= min_recording_duration {
+                    flush_recording(trimmed, &tx);
+                } else {
+                    debug!("recording too short ({duration_ms}ms < {}ms), discarding", min_recording_duration.as_millis());
+                }
                 recording = false;
                 is_recording.store(false, Ordering::Relaxed);
                 record_buf.clear();
@@ -235,7 +256,8 @@ fn flush_recording(pcm_samples: &[i16], tx: &broadcast::Sender<Vec<u8>>) {
 /// PCMサンプル列をOgg Opusバイナリに変換する。
 fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     debug_assert_eq!(ENCODE_CHANNELS, 1, "encode_to_ogg_opus expects mono input");
-    let mut encoder = Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
+    let mut encoder = Encoder::new(OPUS_SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
+    encoder.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE))?;
     let serial: u32 = 0x57485052; // "WHPR"
 
     let mut buf = Cursor::new(Vec::new());
@@ -247,7 +269,7 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
     head.push(1); // version
     head.push(1); // channel count (mono)
     head.extend_from_slice(&0u16.to_le_bytes()); // pre-skip
-    head.extend_from_slice(&SAMPLE_RATE.to_le_bytes()); // input sample rate
+    head.extend_from_slice(&OPUS_SAMPLE_RATE.to_le_bytes()); // input sample rate
     head.extend_from_slice(&0i16.to_le_bytes()); // output gain
     head.push(0); // channel mapping family
     pw.write_packet(head, serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;

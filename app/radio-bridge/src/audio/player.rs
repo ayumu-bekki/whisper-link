@@ -5,10 +5,9 @@ use opus::Decoder;
 use std::io::Cursor;
 use tracing::debug;
 
-const SAMPLE_RATE: u32 = 48000;
-const CHANNELS: u32 = 1;
-// デコード出力バッファ (最大フレームサイズ: 120ms = 5760サンプル)
-const MAX_DECODE_SIZE: usize = 5760;
+const ALSA_SAMPLE_RATE: u32 = 48000; // ALSAデバイスは48kHz固定
+const OPUS_SAMPLE_RATE: u32 = 24000; // Opusデコードは24kHz
+const MAX_DECODE_SIZE: usize = 2880; // 最大フレームサイズ: 120ms @ 24kHz
 
 pub struct AudioPlayer {
     pub device: String,
@@ -31,12 +30,15 @@ impl AudioPlayer {
     }
 
     fn write_to_alsa(&self, samples: &[i16]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 24kHz → 48kHz アップサンプル (各サンプルを2回繰り返す)
+        let upsampled: Vec<i16> = samples.iter().flat_map(|&s| [s, s]).collect();
+
         let pcm = PCM::new(&self.device, Direction::Playback, false)?;
 
         {
             let hwp = HwParams::any(&pcm)?;
-            hwp.set_channels(CHANNELS)?;
-            hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest)?;
+            hwp.set_channels(1)?;
+            hwp.set_rate(ALSA_SAMPLE_RATE, ValueOr::Nearest)?;
             hwp.set_format(Format::s16())?;
             hwp.set_access(Access::RWInterleaved)?;
             pcm.hw_params(&hwp)?;
@@ -45,8 +47,8 @@ impl AudioPlayer {
         let io = pcm.io_i16()?;
 
         let mut offset = 0;
-        while offset < samples.len() {
-            let chunk = &samples[offset..];
+        while offset < upsampled.len() {
+            let chunk = &upsampled[offset..];
             match io.writei(chunk) {
                 Ok(written) => offset += written,
                 Err(e) => {
@@ -63,7 +65,7 @@ impl AudioPlayer {
 fn decode_ogg_opus(data: &[u8]) -> Result<Vec<i16>, Box<dyn std::error::Error + Send + Sync>> {
     let mut cursor = Cursor::new(data);
     let mut reader = PacketReader::new(&mut cursor);
-    let mut decoder = Decoder::new(SAMPLE_RATE, opus::Channels::Mono)?;
+    let mut decoder = Decoder::new(OPUS_SAMPLE_RATE, opus::Channels::Mono)?;
     let mut output = Vec::new();
     let mut header_packets = 0usize;
 

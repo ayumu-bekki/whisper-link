@@ -10,16 +10,14 @@ import (
 
 	hrabanopus "github.com/hraban/opus"
 	"github.com/kazzmir/opus-go/ogg"
-	"github.com/zeozeozeo/gomplerate"
 	"google.golang.org/genai"
 )
 
 const (
-	ttsInputSampleRate  = 24000 // Gemini TTS出力: 24kHz
-	ttsOutputSampleRate = 48000 // Opusエンコード: 48kHz
-	sampleRate          = ttsOutputSampleRate
-	channels            = 1
-	frameSize           = 960 // 20ms @ 48kHz
+	sampleRate  = 24000 // Gemini TTS出力 / Opusエンコード: 24kHz
+	channels    = 1
+	frameSize   = 480   // 20ms @ 24kHz
+	opusBitrate = 16000 // 16kbps
 )
 
 const defaultTTSModel = "gemini-3.1-flash-tts-preview"
@@ -83,15 +81,15 @@ func (t *TTSClient) GenerateOggOpus(ctx context.Context, sender, message string)
 
 // GenerateOggOpusFromPrompt は組み立て済みプロンプトから TTS 音声を生成して Ogg Opus で返す。
 func (t *TTSClient) GenerateOggOpusFromPrompt(ctx context.Context, prompt string) ([]byte, error) {
-	pcm48k, err := t.GeneratePCM48kFromPrompt(ctx, prompt)
+	pcm24k, err := t.GeneratePCM24kFromPrompt(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}
-	return encodePCMToOggOpus(pcm48k)
+	return encodePCMToOggOpus(pcm24k)
 }
 
-// GeneratePCM48kFromPrompt はプロンプトからTTS音声を生成し、48kHz mono の PCM(int16)で返す。
-func (t *TTSClient) GeneratePCM48kFromPrompt(ctx context.Context, prompt string) ([]int16, error) {
+// GeneratePCM24kFromPrompt はプロンプトからTTS音声を生成し、24kHz mono の PCM(int16)で返す。
+func (t *TTSClient) GeneratePCM24kFromPrompt(ctx context.Context, prompt string) ([]int16, error) {
 	start := time.Now()
 	resp, err := t.client.Models.GenerateContent(ctx, t.model,
 		[]*genai.Content{
@@ -126,19 +124,13 @@ func (t *TTSClient) GeneratePCM48kFromPrompt(ctx context.Context, prompt string)
 
 	pcmData := stripWAVHeader(blob.Data)
 
-	pcm24k, err := parsePCM16(pcmData)
+	pcm, err := parsePCM16(pcmData)
 	if err != nil {
 		return nil, fmt.Errorf("parsePCM16: %w", err)
 	}
+	log.Printf("[tts] decoded %d samples (%.1fs @ 24kHz)", len(pcm), float64(len(pcm))/sampleRate)
 
-	pcm48k, err := resamplePCM(pcm24k, ttsInputSampleRate, ttsOutputSampleRate)
-	if err != nil {
-		return nil, fmt.Errorf("resamplePCM: %w", err)
-	}
-	log.Printf("[tts] resampled %d → %d samples (%.1fs @ 48kHz)",
-		len(pcm24k), len(pcm48k), float64(len(pcm48k))/ttsOutputSampleRate)
-
-	return pcm48k, nil
+	return pcm, nil
 }
 
 // stripWAVHeader はデータ先頭に "RIFF" マジックがある場合、"data" チャンクのペイロードを返す。
@@ -178,24 +170,18 @@ func parsePCM16(data []byte) ([]int16, error) {
 	return samples, nil
 }
 
-// resamplePCM はPCMをリサンプリングする。
-func resamplePCM(src []int16, srcRate, dstRate int) ([]int16, error) {
-	r, err := gomplerate.NewResampler(channels, srcRate, dstRate)
-	if err != nil {
-		return nil, fmt.Errorf("gomplerate.NewResampler: %w", err)
-	}
-	return r.ResampleInt16(src), nil
-}
-
 // encodePCMToOggOpus はPCMをOpusエンコードしてOgg Opusコンテナに格納する。
 // エンコーダ: hraban/opus (libopus cgo)
 // Oggコンテナ: kazzmir/opus-go/ogg
 func encodePCMToOggOpus(pcm []int16) ([]byte, error) {
-	const preSkip = 312 // Opus standard pre-skip @ 48kHz
+	const preSkip = 312 // Opus standard pre-skip
 
-	enc, err := hrabanopus.NewEncoder(ttsOutputSampleRate, channels, hrabanopus.AppAudio)
+	enc, err := hrabanopus.NewEncoder(sampleRate, channels, hrabanopus.AppVoIP)
 	if err != nil {
 		return nil, fmt.Errorf("opus.NewEncoder: %w", err)
+	}
+	if err := enc.SetBitrate(opusBitrate); err != nil {
+		return nil, fmt.Errorf("opus.SetBitrate: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -205,7 +191,7 @@ func encodePCMToOggOpus(pcm []int16) ([]byte, error) {
 		Version:              1,
 		Channels:             channels,
 		PreSkip:              preSkip,
-		InputSampleRate:      ttsOutputSampleRate,
+		InputSampleRate:      sampleRate,
 		ChannelMappingFamily: 0,
 	}
 	headPkt, err := ogg.BuildOpusHeadPacket(head)

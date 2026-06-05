@@ -42,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             &config.audio.input_device,
             config.audio.input_threshold_rms,
             Duration::from_millis(config.audio.input_silence_ms),
+            Duration::from_millis(config.audio.input_min_recording_ms),
             Duration::from_secs(config.audio.input_max_recording_secs),
         )
         ?,

@@ -13,17 +13,20 @@ import (
 )
 
 const (
-	sampleRate = 48000
-	channels   = 1
-	frameSize  = 960 // 20ms @ 48kHz
+	alsaSampleRate = 48000 // portaudioデバイスは48kHz固定
+	opusSampleRate = 24000 // Opusエンコード/デコードは24kHz
+	opusBitrate    = 16000 // 16kbps
+	channels       = 1
+	alsaFrameSize  = 960 // 20ms @ 48kHz (portaudio入出力)
+	opusFrameSize  = 480 // 20ms @ 24kHz (Opusエンコード)
 )
 
 // recordUntilSilence はマイク入力を監視し、RMS閾値を超えたら録音を開始し、
 // 無音が続いたら録音を終了してOgg Opusデータを返す。
 // maxDuration を超えた場合もその時点で終了する。
 func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
-	in := make([]int16, frameSize)
-	stream, err := portaudio.OpenDefaultStream(channels, 0, float64(sampleRate), frameSize, &in)
+	in := make([]int16, alsaFrameSize)
+	stream, err := portaudio.OpenDefaultStream(channels, 0, float64(alsaSampleRate), alsaFrameSize, &in)
 	if err != nil {
 		return nil, fmt.Errorf("portaudio open: %w", err)
 	}
@@ -34,9 +37,12 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 	}
 	defer stream.Stop()
 
-	enc, err := hrabanopus.NewEncoder(sampleRate, channels, hrabanopus.AppVoIP)
+	enc, err := hrabanopus.NewEncoder(opusSampleRate, channels, hrabanopus.AppVoIP)
 	if err != nil {
 		return nil, fmt.Errorf("opus encoder: %w", err)
+	}
+	if err := enc.SetBitrate(opusBitrate); err != nil {
+		return nil, fmt.Errorf("opus set bitrate: %w", err)
 	}
 
 	threshold := cfg.InputThresholdRMS
@@ -56,8 +62,13 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 			return nil, fmt.Errorf("portaudio read: %w", err)
 		}
 
-		pcm := make([]int16, frameSize)
-		copy(pcm, in)
+		// 48kHz → 24kHz ダウンサンプル (2サンプル平均)
+		pcm48 := make([]int16, alsaFrameSize)
+		copy(pcm48, in)
+		pcm := make([]int16, opusFrameSize)
+		for i := range pcm {
+			pcm[i] = int16((int32(pcm48[i*2]) + int32(pcm48[i*2+1])) / 2)
+		}
 		rms := computeRMS(pcm)
 
 		if rms >= threshold {
@@ -106,11 +117,22 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 	trimmed := opusFrames[:last+1]
 	log.Printf("[recorder] trimmed %d → %d frames", len(opusFrames), len(trimmed))
 
+	// 最小録音時間チェック (opusFrameSize サンプル/フレーム @ opusSampleRate)
+	durationMs := uint64(len(trimmed)) * uint64(opusFrameSize) * 1000 / uint64(opusSampleRate)
+	minMs := cfg.InputMinRecordingMs
+	if minMs == 0 {
+		minMs = 800 // デフォルト値
+	}
+	if durationMs < minMs {
+		log.Printf("[recorder] too short (%dms < %dms), discarding", durationMs, minMs)
+		return nil, nil
+	}
+
 	return encodeToOggOpus(trimmed), nil
 }
 
 func encodeToOggOpus(frames [][]byte) []byte {
-	const preSkip = 312 // Opus standard pre-skip @ 48kHz
+	const preSkip = 312 // Opus standard pre-skip
 
 	var buf bytes.Buffer
 	pw := ogg.NewPacketWriter(&buf, 0x57485052) // "WHPR"
@@ -119,7 +141,7 @@ func encodeToOggOpus(frames [][]byte) []byte {
 		Version:              1,
 		Channels:             channels,
 		PreSkip:              preSkip,
-		InputSampleRate:      sampleRate,
+		InputSampleRate:      opusSampleRate,
 		ChannelMappingFamily: 0,
 	}
 	headPkt, _ := ogg.BuildOpusHeadPacket(head)
@@ -131,7 +153,7 @@ func encodeToOggOpus(frames [][]byte) []byte {
 
 	var totalSamples uint64
 	for i, frame := range frames {
-		totalSamples += uint64(frameSize)
+		totalSamples += uint64(opusFrameSize)
 		granule := uint64(preSkip) + totalSamples
 		isLast := i == len(frames)-1
 		pw.WritePacket(frame, granule, false, isLast)
@@ -146,13 +168,20 @@ func playOggOpus(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
-	log.Printf("[play] decoded %d samples (%.1f sec)", len(pcmData), float64(len(pcmData))/float64(sampleRate))
+	log.Printf("[play] decoded %d samples (%.1f sec)", len(pcmData), float64(len(pcmData))/float64(opusSampleRate))
 	if len(pcmData) == 0 {
 		return nil
 	}
 
-	out := make([]int16, frameSize)
-	stream, err := portaudio.OpenDefaultStream(0, channels, float64(sampleRate), frameSize, &out)
+	// 24kHz → 48kHz アップサンプル (各サンプルを2回繰り返す)
+	upsampled := make([]int16, len(pcmData)*2)
+	for i, s := range pcmData {
+		upsampled[i*2] = s
+		upsampled[i*2+1] = s
+	}
+
+	out := make([]int16, alsaFrameSize)
+	stream, err := portaudio.OpenDefaultStream(0, channels, float64(alsaSampleRate), alsaFrameSize, &out)
 	if err != nil {
 		return fmt.Errorf("portaudio open: %w", err)
 	}
@@ -163,8 +192,8 @@ func playOggOpus(data []byte) error {
 	}
 	defer stream.Stop()
 
-	for i := 0; i+frameSize <= len(pcmData); i += frameSize {
-		copy(out, pcmData[i:i+frameSize])
+	for i := 0; i+alsaFrameSize <= len(upsampled); i += alsaFrameSize {
+		copy(out, upsampled[i:i+alsaFrameSize])
 		if err := stream.Write(); err != nil {
 			return fmt.Errorf("portaudio write: %w", err)
 		}
@@ -180,7 +209,7 @@ func decodeOggOpus(data []byte) ([]int16, error) {
 	defer s.Close()
 
 	var pcm []int16
-	buf := make([]int16, frameSize*10)
+	buf := make([]int16, opusFrameSize*10)
 	for {
 		n, err := s.Read(buf)
 		if n > 0 {

@@ -4,4 +4,5 @@ listen_addr = "0.0.0.0:50051"
 [audio]
 input_threshold_rms      = 1000  # 録音開始 RMS 閾値 (0-32767)
 input_silence_ms         = 2000  # この無音時間で録音終了
+input_min_recording_ms   = 800   # これ未満の録音はブロードキャストしない
 input_max_recording_secs = 60    # 1 録音の最大秒数

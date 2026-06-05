@@ -8,7 +8,6 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hraban/opus v0.0.0-20251117090126-c76ea7e21bf3
 	github.com/kazzmir/opus-go v1.3.0
-	github.com/zeozeozeo/gomplerate v0.0.0-20250404113140-0fbb236df825
 	google.golang.org/genai v1.58.0
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6

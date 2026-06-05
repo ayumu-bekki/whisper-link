@@ -7,8 +7,9 @@ ptt_pin = 26
 [audio]
 output_device       = "plughw:0,0"
 input_device        = "hw:0,0"
-input_threshold_rms     = 1000
-input_silence_ms        = 2000
+input_threshold_rms      = 1000
+input_silence_ms         = 2000
+input_min_recording_ms   = 800   # これ未満の録音はブロードキャストしない
 input_max_recording_secs = 30
 
 [timing]

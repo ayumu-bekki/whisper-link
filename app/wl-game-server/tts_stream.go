@@ -25,7 +25,7 @@ func generateChunksParallel(ctx context.Context, ttsClient *TTSClient, prompts [
 	}
 	for i, prompt := range prompts {
 		go func(idx int, ttsPrompt string) {
-			pcm, err := ttsClient.GeneratePCM48kFromPrompt(ctx, ttsPrompt)
+			pcm, err := ttsClient.GeneratePCM24kFromPrompt(ctx, ttsPrompt)
 			if err != nil {
 				results[idx] <- ttsChunkResult{err: err}
 				return
