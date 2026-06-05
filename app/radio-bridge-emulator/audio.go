@@ -202,22 +202,32 @@ func playOggOpus(data []byte) error {
 }
 
 func decodeOggOpus(data []byte) ([]int16, error) {
-	s, err := hrabanopus.NewStream(bytes.NewReader(data))
+	dec, err := hrabanopus.NewDecoder(opusSampleRate, channels)
 	if err != nil {
-		return nil, fmt.Errorf("opus.NewStream: %w", err)
+		return nil, fmt.Errorf("opus.NewDecoder: %w", err)
 	}
-	defer s.Close()
+
+	r := ogg.NewPacketReader(bytes.NewReader(data))
 
 	var pcm []int16
 	buf := make([]int16, opusFrameSize*10)
+	headerPackets := 0
 	for {
-		n, err := s.Read(buf)
-		if n > 0 {
-			pcm = append(pcm, buf[:n]...)
-		}
+		pkt, err := r.ReadPacket()
 		if err != nil {
 			break
 		}
+		// 最初の2パケットはOpusHead / OpusTags
+		if headerPackets < 2 {
+			headerPackets++
+			continue
+		}
+		n, err := dec.Decode(pkt.Data, buf)
+		if err != nil {
+			log.Printf("[decode] packet decode error: %v", err)
+			continue
+		}
+		pcm = append(pcm, buf[:n]...)
 	}
 	return pcm, nil
 }
