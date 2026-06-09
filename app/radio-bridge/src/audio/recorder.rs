@@ -3,7 +3,8 @@ use alsa::{Direction, ValueOr};
 use ogg::writing::PacketWriter;
 use opus::Encoder;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -33,6 +34,7 @@ impl AudioRecorder {
         silence_duration: Duration,
         min_recording_duration: Duration,
         max_recording_duration: Duration,
+        dump_ogg_dir: Option<PathBuf>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (tx, _) = broadcast::channel::<Vec<u8>>(32);
         let tx_clone = tx.clone();
@@ -51,6 +53,7 @@ impl AudioRecorder {
                 silence_duration,
                 min_recording_duration,
                 max_recording_duration,
+                dump_ogg_dir,
                 tx_clone,
                 &is_recording_clone,
                 &is_transmitting_clone,
@@ -90,6 +93,7 @@ fn record_loop(
     silence_duration: Duration,
     min_recording_duration: Duration,
     max_recording_duration: Duration,
+    dump_ogg_dir: Option<PathBuf>,
     tx: broadcast::Sender<Vec<u8>>,
     is_recording: &AtomicBool,
     is_transmitting: &AtomicBool,
@@ -117,8 +121,6 @@ fn record_loop(
 
     // 録音バッファ (PCMサンプル列)
     let mut record_buf: Vec<i16> = Vec::new();
-    // フレームごとのRMS (末尾無音トリミング用、record_buf を FRAME_SIZE 区切りにしたときの各区間のRMS)
-    let mut frame_rms: Vec<u16> = Vec::new();
     // 録音状態
     let mut recording = false;
     // 最後にしきい値を超えた時刻
@@ -147,7 +149,6 @@ fn record_loop(
                 recording = false;
                 is_recording.store(false, Ordering::Relaxed);
                 record_buf.clear();
-                frame_rms.clear();
                 last_above_threshold = None;
                 record_started_at = None;
             }
@@ -175,7 +176,6 @@ fn record_loop(
                 recording = true;
                 is_recording.store(true, Ordering::Relaxed);
                 record_buf.clear();
-                frame_rms.clear();
                 record_started_at = Some(Instant::now());
                 info!("recording started (rms={rms})");
             }
@@ -183,7 +183,6 @@ fn record_loop(
 
         if recording {
             record_buf.extend_from_slice(samples);
-            frame_rms.push(rms);
 
             // 最大録音時間を超えたら強制終了
             if let Some(started) = record_started_at {
@@ -194,15 +193,13 @@ fn record_loop(
                     );
                     let duration_ms = record_buf.len() as u64 * 1000 / OPUS_SAMPLE_RATE as u64;
                     if Duration::from_millis(duration_ms) >= min_recording_duration {
-                        // 最大時間到達時はまだ発話中の可能性が高いのでトリミングしない
-                        flush_recording(&record_buf, &tx);
+                        flush_recording(&record_buf, dump_ogg_dir.as_deref(), &tx);
                     } else {
                         debug!("recording too short ({duration_ms}ms < {}ms), discarding", min_recording_duration.as_millis());
                     }
                     recording = false;
                     is_recording.store(false, Ordering::Relaxed);
                     record_buf.clear();
-                    frame_rms.clear();
                     last_above_threshold = None;
                     record_started_at = None;
                     continue;
@@ -215,24 +212,16 @@ fn record_loop(
                 .unwrap_or(true);
 
             if silence_elapsed {
-                // 末尾の無音フレームをトリミング（20ms余白を1フレーム残す）
-                let trimmed = trim_trailing_silence(&record_buf, &frame_rms, threshold_rms);
-                let duration_ms = trimmed.len() as u64 * 1000 / OPUS_SAMPLE_RATE as u64;
-                info!(
-                    samples = trimmed.len(),
-                    trimmed_from = record_buf.len(),
-                    duration_ms,
-                    "recording finished"
-                );
+                let duration_ms = record_buf.len() as u64 * 1000 / OPUS_SAMPLE_RATE as u64;
+                info!(samples = record_buf.len(), duration_ms, "recording finished");
                 if Duration::from_millis(duration_ms) >= min_recording_duration {
-                    flush_recording(trimmed, &tx);
+                    flush_recording(&record_buf, dump_ogg_dir.as_deref(), &tx);
                 } else {
                     debug!("recording too short ({duration_ms}ms < {}ms), discarding", min_recording_duration.as_millis());
                 }
                 recording = false;
                 is_recording.store(false, Ordering::Relaxed);
                 record_buf.clear();
-                frame_rms.clear();
                 last_above_threshold = None;
                 record_started_at = None;
             }
@@ -240,11 +229,28 @@ fn record_loop(
     }
 }
 
+static DUMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// 録音済みPCMをOgg Opusにエンコードしてブロードキャストに送る。
-fn flush_recording(pcm_samples: &[i16], tx: &broadcast::Sender<Vec<u8>>) {
+/// `dump_dir` が Some のときはエンコード結果を連番ファイルとして保存する。
+fn flush_recording(pcm_samples: &[i16], dump_dir: Option<&std::path::Path>, tx: &broadcast::Sender<Vec<u8>>) {
     match encode_to_ogg_opus(pcm_samples) {
         Ok(ogg_data) => {
             debug!("encoded ogg opus: {} bytes", ogg_data.len());
+            if let Some(dir) = dump_dir {
+                let n = DUMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let path = dir.join(format!("rec_{n:05}.ogg"));
+                match std::fs::create_dir_all(dir) {
+                    Ok(()) => {
+                        if let Err(e) = std::fs::write(&path, &ogg_data) {
+                            warn!(error = %e, "failed to dump Ogg");
+                        } else {
+                            info!(path = %path.display(), "dumped Ogg Opus");
+                        }
+                    }
+                    Err(e) => warn!(error = %e, "failed to create dump dir"),
+                }
+            }
             if tx.send(ogg_data).is_err() {
                 debug!("no receivers connected, dropping recorded audio");
             }
@@ -254,8 +260,30 @@ fn flush_recording(pcm_samples: &[i16], tx: &broadcast::Sender<Vec<u8>>) {
 }
 
 /// PCMサンプル列をOgg Opusバイナリに変換する。
+///
+/// Ogg の構造は radio-bridge-emulator (audio.go の encodeToOggOpus) と一致させる。
+/// すなわち pre-skip=312 を宣言し、各音声パケットに累積グラニュール
+/// (pre_skip + 累積サンプル数) を付与し、最後のパケットで EndStream を立てる。
+/// 中間パケットのグラニュールを 0 にしてしまうとデコーダがストリーム長を誤認し
+/// 末尾(や先頭)を切り詰めるため、エミュレーター同様パケット毎に正しい値を入れる。
 fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     debug_assert_eq!(ENCODE_CHANNELS, 1, "encode_to_ogg_opus expects mono input");
+    const PRE_SKIP: u16 = 312; // Opus standard pre-skip (emulator と一致)
+
+    // 入力振幅正規化: Mac ハードウェア AGC の代替。
+    // クリッピング (max=0dBFS) が Opus VoIP の AGC/VAD を誤動作させ、音声中間部を無音化する。
+    // ピークが閾値を超えていればスケールダウンし、VoIP エンコーダに適切なレベルを渡す。
+    const NORMALIZE_PEAK: f32 = 24576.0; // -2.5 dBFS
+    let max_abs = samples.iter().map(|&s| s.unsigned_abs() as f32).fold(0.0_f32, f32::max);
+    let normalized_buf: Vec<i16>;
+    let samples: &[i16] = if max_abs > NORMALIZE_PEAK {
+        let scale = NORMALIZE_PEAK / max_abs;
+        normalized_buf = samples.iter().map(|&s| (s as f32 * scale) as i16).collect();
+        &normalized_buf
+    } else {
+        samples
+    };
+
     let mut encoder = Encoder::new(OPUS_SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
     encoder.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE))?;
     let serial: u32 = 0x57485052; // "WHPR"
@@ -268,7 +296,7 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
     head.extend_from_slice(b"OpusHead");
     head.push(1); // version
     head.push(1); // channel count (mono)
-    head.extend_from_slice(&0u16.to_le_bytes()); // pre-skip
+    head.extend_from_slice(&PRE_SKIP.to_le_bytes()); // pre-skip
     head.extend_from_slice(&OPUS_SAMPLE_RATE.to_le_bytes()); // input sample rate
     head.extend_from_slice(&0i16.to_le_bytes()); // output gain
     head.push(0); // channel mapping family
@@ -283,28 +311,19 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
     tags.extend_from_slice(&0u32.to_le_bytes());
     pw.write_packet(tags, serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
 
-    // 音声パケット: FRAME_SIZE サンプルずつエンコード
+    // 音声パケット: FRAME_SIZE サンプルずつエンコードし、各パケットに累積グラニュールを付ける。
+    // 最後のパケットは EndStream (EOS) を立てる。ページ分割は行わない。
+    //
+    // Rust の ogg クレートは granule をそのまま Ogg ページヘッダに書く (48kHz 単位で解釈される)。
+    // kazzmir (Go) は内部で ×2 変換するため 480 を渡すが、ここでは 960 を直接渡す。
+    // 480 を渡すと OGG の再生時間が WAV の半分になり、デコーダーが途中で打ち切る。
+    const GRANULE_PER_FRAME: u64 = FRAME_SIZE as u64 * (ALSA_SAMPLE_RATE as u64 / OPUS_SAMPLE_RATE as u64); // 480 * 2 = 960
     let mut opus_buf = vec![0u8; 4096];
-    let mut granule_pos: u64 = 0;
-    let mut chunk_iter = samples.chunks(FRAME_SIZE);
-    let mut pending: Option<Vec<u8>> = None;
+    let chunks: Vec<&[i16]> = samples.chunks(FRAME_SIZE).collect();
+    let n = chunks.len();
+    let mut total_samples: u64 = 0;
 
-    loop {
-        let chunk = match chunk_iter.next() {
-            Some(c) => c,
-            None => {
-                if let Some(pkt) = pending.take() {
-                    pw.write_packet(
-                        pkt,
-                        serial,
-                        ogg::writing::PacketWriteEndInfo::EndStream,
-                        granule_pos,
-                    )?;
-                }
-                break;
-            }
-        };
-
+    for (i, chunk) in chunks.iter().enumerate() {
         let encoded_len = if chunk.len() == FRAME_SIZE {
             encoder.encode(chunk, &mut opus_buf)?
         } else {
@@ -313,42 +332,19 @@ fn encode_to_ogg_opus(samples: &[i16]) -> Result<Vec<u8>, Box<dyn std::error::Er
             encoder.encode(&padded, &mut opus_buf)?
         };
 
-        granule_pos += FRAME_SIZE as u64;
-
-        if let Some(prev) = pending.replace(opus_buf[..encoded_len].to_vec()) {
-            pw.write_packet(
-                prev,
-                serial,
-                ogg::writing::PacketWriteEndInfo::NormalPacket,
-                0,
-            )?;
-        }
+        total_samples += GRANULE_PER_FRAME;
+        let granule = PRE_SKIP as u64 + total_samples;
+        let info = if i == n - 1 {
+            ogg::writing::PacketWriteEndInfo::EndStream
+        } else {
+            ogg::writing::PacketWriteEndInfo::NormalPacket
+        };
+        pw.write_packet(opus_buf[..encoded_len].to_vec(), serial, info, granule)?;
     }
 
     Ok(buf.into_inner())
 }
 
-/// 録音末尾の無音区間（RMSが閾値未満のフレーム）をトリミングする。
-/// 発話直後の不自然な切れを防ぐため、末尾に TRAIL_FRAMES 分の余白を残す。
-/// `frame_rms` は `record_buf` を FRAME_SIZE 区切りにした各区間のRMS。
-fn trim_trailing_silence<'a>(record_buf: &'a [i16], frame_rms: &[u16], threshold_rms: u16) -> &'a [i16] {
-    // 20ms 余白（= 1 フレーム）を残す
-    const TRAIL_FRAMES: usize = 1;
-
-    if frame_rms.is_empty() {
-        return record_buf;
-    }
-
-    // 末尾から、閾値未満のフレームを TRAIL_FRAMES を超えない範囲で削る
-    let mut last = frame_rms.len() - 1;
-    while last > TRAIL_FRAMES && frame_rms[last] < threshold_rms {
-        last -= 1;
-    }
-
-    // フレーム数 last+1 に対応するサンプル数（最終フレームは端数になりうるので buf 長で上限）
-    let keep_samples = ((last + 1) * FRAME_SIZE).min(record_buf.len());
-    &record_buf[..keep_samples]
-}
 
 fn compute_rms(samples: &[i16]) -> u16 {
     if samples.is_empty() {

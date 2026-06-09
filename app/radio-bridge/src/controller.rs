@@ -1,7 +1,7 @@
-use crate::audio::player::AudioPlayer;
+use crate::audio::player::{AudioPlayer, decode_ogg_opus, write_pcm_to_alsa};
 use crate::audio::recorder::AudioRecorder;
 use crate::config::Config;
-use crate::queue::{AudioEntry, AudioQueue, StreamStatus};
+use crate::queue::{AudioQueue, StreamStatus};
 use rppal::gpio::{Gpio, OutputPin};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -120,16 +120,15 @@ impl Controller {
         State::Playing
     }
 
+    /// ストリームのチャンクを全て収集してからPCMを結合し、1回のALSA書き込みで再生する。
+    ///
+    /// チャンクごとに ALSA を open/close すると先頭クリック音と無音ギャップが生じる。
+    /// decode は async コンテキストで高速に行い、ALSA 書き込みだけを spawn_blocking に渡す。
     async fn handle_playing(&self, player: &AudioPlayer) -> State {
         // 連続再生中に現ストリームのチャンクが尽きたとき、後続をこの時間だけ待つ。
-        // 超えたらストリームをクローズして PTT を切る。
         const STREAM_TIMEOUT_MS: u64 = 2000;
         const POLL_INTERVAL_MS: u64 = 100;
-        // 将来 config.toml の [timing] に stream_timeout_ms として逃がせる。
 
-        // 現在再生中のストリーム (order 先頭)。ONESHOT も 1 チャンクのストリームとして
-        // ここに乗る。別 stream_id のチャンクは別キーに溜まるだけで、このストリームの
-        // 再生には一切割り込まない。
         let stream_id = {
             let q = self.queue.lock().unwrap();
             match q.current_stream() {
@@ -142,8 +141,10 @@ impl Controller {
         };
         info!(%stream_id, "stream playback started");
 
+        // ストリーム全体の 24kHz PCM を積み上げる。terminal chunk が来たら一括再生。
+        let mut all_pcm: Vec<i16> = Vec::new();
+
         loop {
-            // 現ストリームの次チャンクを取り出して再生する。
             let entry = {
                 let mut q = self.queue.lock().unwrap();
                 q.pop_current()
@@ -154,11 +155,24 @@ impl Controller {
                     entry.status,
                     StreamStatus::End | StreamStatus::Oneshot
                 );
-                self.play_entry(player, entry).await;
 
-                // END / ONESHOT を再生し終えたらストリーム完了。
+                // デコードは軽量な同期処理なので async コンテキストで直接実行する。
+                match decode_ogg_opus(&entry.ogg_opus_data) {
+                    Ok(pcm) => {
+                        info!(
+                            chunk_samples = pcm.len(),
+                            duration_secs = pcm.len() as f32 / 24000.0,
+                            status = ?entry.status,
+                            "decoded audio chunk"
+                        );
+                        all_pcm.extend(pcm);
+                    }
+                    Err(e) => error!("decode error: {e}"),
+                }
+
                 if is_terminal {
-                    info!(%stream_id, "state: PLAYING -> PTT_OFF (stream complete)");
+                    info!(%stream_id, total_samples = all_pcm.len(), "stream complete, playing");
+                    self.play_pcm(player, all_pcm).await;
                     self.queue.lock().unwrap().finish_current();
                     return State::PttOff;
                 }
@@ -166,7 +180,6 @@ impl Controller {
             }
 
             // 現ストリームのチャンクが一時的に尽きた。STREAM_TIMEOUT_MS だけ後続を待つ。
-            // 別 stream_id がいくら溜まっても current は変わらないので待ち続けてよい。
             let mut waited = 0;
             let mut resumed = false;
             while waited < STREAM_TIMEOUT_MS {
@@ -186,25 +199,22 @@ impl Controller {
                 continue;
             }
 
-            info!(%stream_id, "state: PLAYING -> PTT_OFF (stream timeout)");
+            // タイムアウト: 収集済み PCM をそのまま再生して終了。
+            info!(%stream_id, total_samples = all_pcm.len(), "stream timeout, playing accumulated");
+            self.play_pcm(player, all_pcm).await;
             self.queue.lock().unwrap().finish_current();
             return State::PttOff;
         }
     }
 
-    /// 1 エントリを spawn_blocking 経由で再生し、完了まで待つ。
-    async fn play_entry(&self, player: &AudioPlayer, entry: AudioEntry) {
-        info!(
-            duration_secs = entry.duration.as_secs_f32(),
-            "playing audio"
-        );
-        let data = entry.ogg_opus_data;
-        let player_device = player.device.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let p = AudioPlayer::new(&player_device);
-            p.play_blocking(&data)
-        })
-        .await;
+    /// 24kHz mono PCM を1回のALSA open/write/drain/close で再生する。
+    async fn play_pcm(&self, player: &AudioPlayer, pcm: Vec<i16>) {
+        if pcm.is_empty() {
+            warn!("play_pcm: empty PCM, skipping");
+            return;
+        }
+        let device = player.device.clone();
+        let result = tokio::task::spawn_blocking(move || write_pcm_to_alsa(&device, &pcm)).await;
 
         match result {
             Ok(Ok(())) => info!("playback complete"),

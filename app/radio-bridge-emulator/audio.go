@@ -108,13 +108,24 @@ func recordUntilSilence(cfg AudioConfig) ([]byte, error) {
 		return nil, nil
 	}
 
-	// 末尾の無音フレームをトリミング（20ms余白を残す）
+	// 末尾の無音フレームをトリミング。
+	// 最後に閾値を超えたフレーム（=語尾）を探し、その後ろに TRAIL_FRAMES 分の余白を残す。
 	const trailFrames = 1 // 20ms 余白
-	last := len(opusFrames) - 1
-	for last > trailFrames && frameRMS[last] < threshold {
-		last--
+	lastSpeech := -1
+	for i := len(opusFrames) - 1; i >= 0; i-- {
+		if frameRMS[i] >= threshold {
+			lastSpeech = i
+			break
+		}
 	}
-	trimmed := opusFrames[:last+1]
+	keepFrames := len(opusFrames) // 全フレーム閾値未満なら削らない
+	if lastSpeech >= 0 {
+		keepFrames = lastSpeech + 1 + trailFrames
+		if keepFrames > len(opusFrames) {
+			keepFrames = len(opusFrames)
+		}
+	}
+	trimmed := opusFrames[:keepFrames]
 	log.Printf("[recorder] trimmed %d → %d frames", len(opusFrames), len(trimmed))
 
 	// 最小録音時間チェック (opusFrameSize サンプル/フレーム @ opusSampleRate)

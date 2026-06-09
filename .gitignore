@@ -16,6 +16,9 @@ app/wl-game-server-test-client/wl-game-server-test-client
 # wl-game-server config (API キー等を含むため)
 app/wl-game-server/config.toml
 
+# radio-bridge 録音ダンプ
+app/radio-bridge/dump_audio/*.ogg
+
 # Generated protobuf code
 app/proto/gen/
 app/wl-game-server/gen/

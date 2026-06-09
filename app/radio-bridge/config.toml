@@ -5,18 +5,20 @@ listen_addr = "0.0.0.0:50051"
 ptt_pin = 26
 
 [audio]
-output_device       = "plughw:0,0"
-input_device        = "hw:0,0"
+output_device       = "plughw:2,0"
+input_device        = "hw:2,0"
 input_threshold_rms      = 1000
 input_silence_ms         = 2000
 input_min_recording_ms   = 800   # これ未満の録音はブロードキャストしない
 input_max_recording_secs = 30
+dump_ogg_enabled = false
+dump_ogg_dir     = "/app/dump_audio"
 
 [timing]
-ptt_on_delay_ms  = 500
-ptt_off_delay_ms = 200
+ptt_on_delay_ms  = 300
+ptt_off_delay_ms = 100
 cooldown_ms      = 1000
 
 [queue]
-max_audio_duration_secs = 30
+max_audio_duration_secs = 40
 max_queue_size          = 10

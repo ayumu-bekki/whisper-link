@@ -37,6 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.queue.max_audio_duration_secs,
     )));
 
+    let dump_ogg_dir = config.audio.dump_ogg_enabled
+        .then(|| std::path::PathBuf::from(&config.audio.dump_ogg_dir));
     let recorder = Arc::new(
         AudioRecorder::start(
             &config.audio.input_device,
@@ -44,8 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Duration::from_millis(config.audio.input_silence_ms),
             Duration::from_millis(config.audio.input_min_recording_ms),
             Duration::from_secs(config.audio.input_max_recording_secs),
-        )
-        ?,
+            dump_ogg_dir,
+        )?,
     );
     info!("audio recorder started on device: {}", config.audio.input_device);
 

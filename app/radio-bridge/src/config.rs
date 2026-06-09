@@ -29,9 +29,14 @@ pub struct AudioConfig {
     pub input_max_recording_secs: u64,
     #[serde(default = "default_input_min_recording_ms")]
     pub input_min_recording_ms: u64,
+    #[serde(default)]
+    pub dump_ogg_enabled: bool,
+    #[serde(default = "default_dump_ogg_dir")]
+    pub dump_ogg_dir: String,
 }
 
 fn default_input_min_recording_ms() -> u64 { 800 }
+fn default_dump_ogg_dir() -> String { "/app/dump_audio".to_string() }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TimingConfig {
